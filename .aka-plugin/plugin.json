@@ -1,0 +1,10 @@
+{
+  "name": "observe",
+  "version": "0.1.0",
+  "description": "Akashic observe telemetry plugin",
+  "akashic": {
+    "lifecycle": {
+      "entry": "plugin.py"
+    }
+  }
+}
