@@ -25,6 +25,7 @@ class _ObserveWriter(Protocol):
 
 class ObservePlugin(Plugin):
     name = "observe"
+    version = "1.0.0"
 
     async def initialize(self) -> None:
         workspace = self.context.workspace
