@@ -44,6 +44,18 @@ _NORM_HEX = re.compile(r"0x[0-9a-fA-F]+")
 _NORM_NUM = re.compile(r"\d+")
 
 
+def _live_previous(callback: Any, attribute: str) -> Any:
+    while callback is not None:
+        owner = getattr(callback, "__self__", None)
+        installed = getattr(owner, "_installed", None)
+        if not isinstance(installed, bool) or not hasattr(owner, attribute):
+            return callback
+        if installed:
+            return callback
+        callback = getattr(owner, attribute)
+    return None
+
+
 def _empty_str_set() -> set[str]:
     return set()
 
@@ -69,8 +81,14 @@ class _BucketAgg:
 
 
 class GlobalErrorCollector:
-    def __init__(self, writer: _Emitter) -> None:
+    def __init__(
+        self,
+        writer: _Emitter,
+        *,
+        create_task: Callable[..., asyncio.Task[Any]] = asyncio.create_task,
+    ) -> None:
         self._writer = writer
+        self._create_task = create_task
         self._lock = threading.Lock()
         self._buckets: dict[tuple[str, str], _BucketAgg] = {}
         self._flush_task: asyncio.Task[None] | None = None
@@ -107,7 +125,10 @@ class GlobalErrorCollector:
             self._loop = loop
             self._prev_loop_handler = loop.get_exception_handler()
             loop.set_exception_handler(self._on_loop_except)
-            self._flush_task = loop.create_task(self._flush_loop(), name="observe_error_flush")
+            self._flush_task = self._create_task(
+                self._flush_loop(),
+                name="observe_error_flush",
+            )
         logger.info("global error collector installed")
 
     async def uninstall(self) -> None:
@@ -118,12 +139,26 @@ class GlobalErrorCollector:
         if self._log_handler is not None:
             logging.getLogger().removeHandler(self._log_handler)
             self._log_handler = None
-        if self._prev_excepthook is not None:
-            sys.excepthook = self._prev_excepthook
-        if self._prev_threadhook is not None:
-            threading.excepthook = self._prev_threadhook
-        if self._loop is not None:
-            self._loop.set_exception_handler(self._prev_loop_handler)
+        if sys.excepthook == self._on_sys_except:
+            sys.excepthook = _live_previous(
+                self._prev_excepthook,
+                "_prev_excepthook",
+            )
+        if threading.excepthook == self._on_thread_except:
+            threading.excepthook = _live_previous(
+                self._prev_threadhook,
+                "_prev_threadhook",
+            )
+        if (
+            self._loop is not None
+            and self._loop.get_exception_handler() == self._on_loop_except
+        ):
+            self._loop.set_exception_handler(
+                _live_previous(
+                    self._prev_loop_handler,
+                    "_prev_loop_handler",
+                )
+            )
         # 2. 停 flush task 并最终 flush
         if self._flush_task is not None:
             _ = self._flush_task.cancel()
@@ -188,8 +223,9 @@ class GlobalErrorCollector:
         tb: types.TracebackType | None,
     ) -> None:
         self._capture_exc("uncaught", "root", exc_type, exc_value, tb, "ERROR")
-        if self._prev_excepthook is not None:
-            _ = self._prev_excepthook(exc_type, exc_value, tb)
+        previous = _live_previous(self._prev_excepthook, "_prev_excepthook")
+        if previous is not None:
+            _ = previous(exc_type, exc_value, tb)
 
     def _on_thread_except(self, args: threading.ExceptHookArgs) -> None:
         thread_name = args.thread.name if args.thread is not None else "thread"
@@ -201,8 +237,9 @@ class GlobalErrorCollector:
             args.exc_traceback,
             "ERROR",
         )
-        if self._prev_threadhook is not None:
-            _ = self._prev_threadhook(args)
+        previous = _live_previous(self._prev_threadhook, "_prev_threadhook")
+        if previous is not None:
+            _ = previous(args)
 
     def _on_loop_except(
         self, loop: asyncio.AbstractEventLoop, context: dict[str, Any]
@@ -224,8 +261,9 @@ class GlobalErrorCollector:
                 top_frame="asyncio",
                 session_key=None,
             )
-        if self._prev_loop_handler is not None:
-            _ = self._prev_loop_handler(loop, context)
+        previous = _live_previous(self._prev_loop_handler, "_prev_loop_handler")
+        if previous is not None:
+            _ = previous(loop, context)
         else:
             loop.default_exception_handler(context)
 

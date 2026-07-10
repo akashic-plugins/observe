@@ -24,6 +24,10 @@ class _ObserveWriter(Protocol):
 
 
 class ObservePlugin(Plugin):
+    @classmethod
+    def dashboard_module(cls) -> str | None:
+        return "dashboard.py"
+
     name = "observe"
     version = "1.0.0"
 
@@ -34,15 +38,18 @@ class ObservePlugin(Plugin):
             return
 
         self._writer = TraceWriter(workspace / "observe" / "observe.db")
-        self._writer_task = asyncio.create_task(
+        self._writer_task = self.context.create_task(
             self._writer.run(),
             name="observe_writer",
         )
-        self._retention_task = asyncio.create_task(
+        self._retention_task = self.context.create_task(
             run_retention_if_needed(workspace / "observe" / "observe.db"),
             name="observe_retention",
         )
-        self._collector = GlobalErrorCollector(self._writer)
+        self._collector = GlobalErrorCollector(
+            self._writer,
+            create_task=self.context.create_task,
+        )
         self._collector.install()
         self.context.event_bus.on(TurnCommitted, self._observe_turn_committed)
         self.context.event_bus.on(ProactiveFinished, self._observe_proactive_finished)
