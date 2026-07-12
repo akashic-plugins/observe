@@ -7,7 +7,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import { MetricTile, TrendChart, Sparkline, Chip, api, type ChartTone } from "@akashic/dashboard-ui";
+import { Grid, MetricTile, TrendChart, Sparkline, Chip, api, type ChartTone } from "@akashic/dashboard-ui";
 
 interface Overview {
   range: string;
@@ -742,7 +742,7 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
         </div>
 
         {/* KPI tiles */}
-        <div className="grid grid-cols-4 gap-4">
+        <Grid columns={4}>
           <div className="animate-fade-up" style={{ animationDelay: "0ms" }}>
             <MetricTile label="对话轮数" value={_compact(overview.turns)} delta={_delta(turnSeries)} sub={overview.last_ts ? `最近 ${_shortTs(overview.last_ts)}` : "无记录"} tone="accent" spark={turnSeries} />
           </div>
@@ -768,10 +768,10 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
           <div className="animate-fade-up" style={{ animationDelay: "180ms" }}>
             <MetricTile label="平均迭代" value={overview.avg_iteration != null ? overview.avg_iteration.toFixed(1) : "—"} unit={`峰 ${overview.max_iteration}`} sub="每轮 LLM 调用次数" tone="warning" spark={iterSeries} />
           </div>
-        </div>
+        </Grid>
 
         {/* trend charts */}
-        <div className="grid grid-cols-2 gap-4">
+        <Grid columns={2}>
           <Card title="输入 Token 趋势" style={{ animationDelay: "220ms" }}>
             <TrendChart data={labelled(tokenSeries)} kind="area" tone="accent" valueFmt={_compact} />
           </Card>
@@ -787,7 +787,7 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
           <Card title="错误趋势" style={{ animationDelay: "460ms" }}>
             <TrendChart data={labelled(errorSeries)} kind="bar" tone="danger" valueFmt={(n) => String(n)} empty="区间内无错误 🎉" />
           </Card>
-        </div>
+        </Grid>
       </div>
 
       {drillOpen && <ErrorDrill portalRef={portalRef} range={range} onClose={() => setDrillOpen(false)} />}
