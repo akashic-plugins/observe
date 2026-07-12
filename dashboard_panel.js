@@ -1,11 +1,11 @@
-// plugins/observe/dashboard_panel.tsx
+// ../akashic-plugin/observe/dashboard_panel.tsx
 import {
   useCallback,
   useEffect,
   useRef,
   useState
 } from "react";
-import { MetricTile, TrendChart, Sparkline, Chip, api } from "@akashic/dashboard-ui";
+import { Grid, MetricTile, TrendChart, Sparkline, Chip, api } from "@akashic/dashboard-ui";
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 var RANGES = [
   { key: "24h", label: "24 \u5C0F\u65F6" },
@@ -572,7 +572,7 @@ function ObserveMain(_props) {
               )) })
             ] })
           ] }),
-          /* @__PURE__ */ jsxs("div", { className: "grid grid-cols-4 gap-4", children: [
+          /* @__PURE__ */ jsxs(Grid, { columns: 4, children: [
             /* @__PURE__ */ jsx("div", { className: "animate-fade-up", style: { animationDelay: "0ms" }, children: /* @__PURE__ */ jsx(MetricTile, { label: "\u5BF9\u8BDD\u8F6E\u6570", value: _compact(overview.turns), delta: _delta(turnSeries), sub: overview.last_ts ? `\u6700\u8FD1 ${_shortTs(overview.last_ts)}` : "\u65E0\u8BB0\u5F55", tone: "accent", spark: turnSeries }) }),
             /* @__PURE__ */ jsxs(
               "div",
@@ -594,7 +594,7 @@ function ObserveMain(_props) {
             /* @__PURE__ */ jsx("div", { className: "animate-fade-up", style: { animationDelay: "120ms" }, children: /* @__PURE__ */ jsx(MetricTile, { label: "\u88AB\u52A8 KV \u547D\u4E2D\u7387", value: _pct(overview.passive_cache_hit_rate), sub: `\u4E3B\u52A8 ${_pct(overview.proactive_cache_hit_rate)}`, tone: "success", spark: passiveHitSeries }) }),
             /* @__PURE__ */ jsx("div", { className: "animate-fade-up", style: { animationDelay: "180ms" }, children: /* @__PURE__ */ jsx(MetricTile, { label: "\u5E73\u5747\u8FED\u4EE3", value: overview.avg_iteration != null ? overview.avg_iteration.toFixed(1) : "\u2014", unit: `\u5CF0 ${overview.max_iteration}`, sub: "\u6BCF\u8F6E LLM \u8C03\u7528\u6B21\u6570", tone: "warning", spark: iterSeries }) })
           ] }),
-          /* @__PURE__ */ jsxs("div", { className: "grid grid-cols-2 gap-4", children: [
+          /* @__PURE__ */ jsxs(Grid, { columns: 2, children: [
             /* @__PURE__ */ jsx(Card, { title: "\u8F93\u5165 Token \u8D8B\u52BF", style: { animationDelay: "220ms" }, children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(tokenSeries), kind: "area", tone: "accent", valueFmt: _compact }) }),
             /* @__PURE__ */ jsx(Card, { title: "\u5E73\u5747\u8FED\u4EE3\u8D8B\u52BF", style: { animationDelay: "280ms" }, children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(iterSeries), kind: "area", tone: "warning", valueFmt: (n) => n.toFixed(1) }) }),
             /* @__PURE__ */ jsx(Card, { title: "\u5168\u5C40\u88AB\u52A8\u94FE\u8DEF\u547D\u4E2D\u7387\u8D8B\u52BF", style: { animationDelay: "340ms" }, children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(passiveHitSeries), kind: "area", tone: "success", valueFmt: (n) => `${n.toFixed(0)}%` }) }),
