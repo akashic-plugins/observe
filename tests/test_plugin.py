@@ -205,3 +205,35 @@ async def test_mobile_message_usage_returns_true_output_tokens(tmp_path: Path) -
     assert result == {"usage": {"output_tokens": 321}}
     assert ObservePlugin.mobile_ui_module() == "mobile_panel.js"
     assert ObservePlugin.mobile_ui_stylesheet() == "mobile_panel.css"
+
+
+def test_open_db_removes_legacy_unique_turn_id_index(tmp_path: Path) -> None:
+    db_path = tmp_path / "observe.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE turns(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                source TEXT NOT NULL,
+                session_key TEXT NOT NULL,
+                turn_id TEXT
+            );
+            CREATE UNIQUE INDEX ux_turns_turn_id
+            ON turns (turn_id) WHERE turn_id IS NOT NULL;
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    db_module = sys.modules[f"{module.__name__}.db"]
+    migrated = db_module.open_db(db_path)
+    try:
+        legacy_index = migrated.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='ux_turns_turn_id'"
+        ).fetchone()
+    finally:
+        migrated.close()
+    assert legacy_index is None
