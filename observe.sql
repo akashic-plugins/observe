@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS turns (
     ts          TEXT    NOT NULL,           -- ISO8601 UTC
     source      TEXT    NOT NULL,           -- 'agent'
     session_key TEXT    NOT NULL,
+    turn_id     TEXT,
+    assistant_message_id TEXT,
     user_msg    TEXT,                       -- 用户原文
     llm_output  TEXT    NOT NULL DEFAULT '', -- LLM 最终输出完整文本
     raw_llm_output TEXT,                    -- 装饰/清洗前的原始模型输出
@@ -30,6 +32,7 @@ CREATE TABLE IF NOT EXISTS turns (
     react_input_sum_tokens INTEGER,         -- 本轮所有 LLM 输入估算 token 累计
     react_input_peak_tokens INTEGER,        -- 本轮最大一次 LLM 输入估算 token
     react_final_input_tokens INTEGER,       -- 最后一次 LLM 输入估算 token
+    model_output_tokens INTEGER,            -- 本轮全部模型调用的真实输出 token
     react_cache_prompt_tokens INTEGER,      -- DeepSeek KV cache: 本轮输入中 hit+miss tokens
     react_cache_hit_tokens INTEGER,         -- DeepSeek KV cache: 本轮缓存命中 tokens
     error       TEXT                        -- NULL = 正常
@@ -37,6 +40,8 @@ CREATE TABLE IF NOT EXISTS turns (
 
 CREATE INDEX IF NOT EXISTS ix_turns_sk_ts ON turns (session_key, ts);
 CREATE INDEX IF NOT EXISTS ix_turns_source ON turns (source, ts);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_turn_id ON turns (turn_id) WHERE turn_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_assistant_message_id ON turns (assistant_message_id) WHERE assistant_message_id IS NOT NULL;
 
 -- ─────────────────────────────────────────────
 -- 2. rag_queries  当前 memory 检索记录

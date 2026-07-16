@@ -6,12 +6,14 @@ import sqlite3
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from agent.plugins.context import PluginContext, PluginKVStore
 from agent.plugins.scope import PluginScope, ScopedEventBus
 from bus.event_bus import EventBus
+from bus.events_lifecycle import TurnCommitted
 
 
 def _load_plugin_module():
@@ -35,8 +37,11 @@ GlobalErrorCollector = module.GlobalErrorCollector
 
 
 class _Emitter:
-    def emit(self, _event: object) -> None:
-        return None
+    def __init__(self) -> None:
+        self.events: list[object] = []
+
+    def emit(self, event: object) -> None:
+        self.events.append(event)
 
 
 @pytest.mark.asyncio
@@ -91,3 +96,78 @@ async def test_global_hooks_survive_overlapping_generations() -> None:
     finally:
         await second.uninstall()
         await first.uninstall()
+
+
+def test_turn_trace_keeps_message_identity_and_output_tokens(tmp_path: Path) -> None:
+    emitter = _Emitter()
+    module._emit_turn_trace(
+        emitter,
+        TurnCommitted(
+            session_key="mobile:demo",
+            channel="mobile",
+            chat_id="demo",
+            input_message="hi",
+            persisted_user_message="hi",
+            assistant_response="hello",
+            tools_used=[],
+            turn_id="turn-1",
+            assistant_message_id="mobile:demo:2",
+            model_usage={"output_tokens": 321},
+        ),
+    )
+
+    trace = emitter.events[0]
+    assert trace.turn_id == "turn-1"
+    assert trace.assistant_message_id == "mobile:demo:2"
+    assert trace.model_output_tokens == 321
+    db_module = sys.modules[f"{module.__name__}.db"]
+    conn = db_module.open_db(tmp_path / "observe.db")
+    try:
+        module.TraceWriter(tmp_path / "observe.db")._write_one(conn, trace)
+        row = conn.execute(
+            "SELECT turn_id, assistant_message_id, model_output_tokens FROM turns"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row == ("turn-1", "mobile:demo:2", 321)
+
+
+@pytest.mark.asyncio
+async def test_mobile_message_usage_returns_true_output_tokens(tmp_path: Path) -> None:
+    plugin = ObservePlugin()
+    plugin.context = SimpleNamespace(workspace=tmp_path)
+    db_module = sys.modules[f"{module.__name__}.db"]
+    conn = db_module.open_db(tmp_path / "observe" / "observe.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO turns(
+                ts, source, session_key, turn_id, assistant_message_id,
+                user_msg, llm_output, model_output_tokens
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "2026-07-17T00:00:00+00:00",
+                "agent",
+                "mobile:demo",
+                "turn-1",
+                "mobile:demo:2",
+                "hi",
+                "hello",
+                321,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = await plugin.mobile_ui_call(
+        "kvcache.message_usage",
+        {"message_id": "mobile:demo:2"},
+        session_id="mobile:demo",
+        turn_id=None,
+    )
+
+    assert result == {"usage": {"output_tokens": 321}}
+    assert ObservePlugin.mobile_ui_module() == "mobile_panel.js"
+    assert ObservePlugin.mobile_ui_stylesheet() == "mobile_panel.css"

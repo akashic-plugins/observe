@@ -5,13 +5,14 @@ import json
 import logging
 from collections.abc import Mapping
 from contextlib import suppress
-from typing import Protocol, cast, runtime_checkable
+from typing import Literal, Protocol, cast, runtime_checkable
 
 from agent.plugins import Plugin
 from bus.events_lifecycle import ProactiveFinished, TurnCommitted
 from core.memory.events import MemoryWritten, RetrievalCompleted
 
 from .collector import GlobalErrorCollector
+from .mobile_kvcache import KVCacheDashboardReader
 from .retention import run_retention_if_needed
 from .writer import TraceWriter
 
@@ -27,6 +28,14 @@ class ObservePlugin(Plugin):
     @classmethod
     def dashboard_module(cls) -> str | None:
         return "dashboard.py"
+
+    @classmethod
+    def mobile_ui_module(cls) -> str | None:
+        return "mobile_panel.js"
+
+    @classmethod
+    def mobile_ui_stylesheet(cls) -> str | None:
+        return "mobile_panel.css"
 
     name = "observe"
     version = "1.0.0"
@@ -70,6 +79,57 @@ class ObservePlugin(Plugin):
             with suppress(asyncio.CancelledError):
                 await task
 
+    async def mobile_ui_call(
+        self,
+        method: str,
+        payload: dict[str, object],
+        *,
+        session_id: str | None,
+        turn_id: str | None,
+    ) -> dict[str, object]:
+        """返回 observe 自有的 KV Cache 移动投影。"""
+
+        # 1. 在插件 RPC 边界校验方法与查询参数
+        if method not in {
+            "kvcache.overview",
+            "kvcache.turns",
+            "kvcache.message_usage",
+        }:
+            raise ValueError(f"未知 observe 移动方法: {method}")
+        workspace = self.context.workspace
+        if workspace is None:
+            raise RuntimeError("observe 移动看板缺少 workspace")
+        reader = KVCacheDashboardReader(workspace)
+        if method == "kvcache.overview":
+            return cast("dict[str, object]", await asyncio.to_thread(reader.get_summary))
+        if method == "kvcache.message_usage":
+            message_id = _required_mobile_string(payload, "message_id")
+            if session_id is None:
+                raise ValueError("kvcache.message_usage 缺少 session_id")
+            usage = await asyncio.to_thread(
+                reader.get_message_usage,
+                message_id=message_id,
+                session_key=session_id,
+            )
+            return {"usage": usage}
+
+        # 2. 列表查询复用 observe 的真实 Turn 数据
+        page = _mobile_page_value(payload, "page", default=1, maximum=10_000)
+        page_size = _mobile_page_value(payload, "page_size", default=25, maximum=50)
+        source = _mobile_source_value(payload)
+        items, total = await asyncio.to_thread(
+            reader.list_turns,
+            page=page,
+            page_size=page_size,
+            source=source,
+        )
+        return {
+            "items": cast("list[object]", items),
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+
     def _observe_turn_committed(self, event: TurnCommitted) -> None:
         writer = getattr(self, "_writer", None)
         if not isinstance(writer, _ObserveWriter):
@@ -111,6 +171,8 @@ def _emit_turn_trace(writer: _ObserveWriter, event: TurnCommitted) -> None:
         TurnTraceEvent(
             source="agent",
             session_key=event.session_key,
+            turn_id=event.turn_id,
+            assistant_message_id=event.assistant_message_id,
             user_msg=event.persisted_user_message,
             llm_output=event.assistant_response,
             raw_llm_output=event.raw_reply,
@@ -130,6 +192,7 @@ def _emit_turn_trace(writer: _ObserveWriter, event: TurnCommitted) -> None:
             react_input_sum_tokens=react_stats.get("turn_input_sum_tokens"),
             react_input_peak_tokens=react_stats.get("turn_input_peak_tokens"),
             react_final_input_tokens=react_stats.get("final_call_input_tokens"),
+            model_output_tokens=_model_usage_int(event.model_usage, "output_tokens"),
             react_cache_prompt_tokens=react_stats.get("cache_prompt_tokens"),
             react_cache_hit_tokens=react_stats.get("cache_hit_tokens"),
         )
@@ -139,6 +202,40 @@ def _emit_turn_trace(writer: _ObserveWriter, event: TurnCommitted) -> None:
         event.session_key,
         len(tool_calls),
     )
+
+
+def _mobile_page_value(
+    payload: dict[str, object],
+    name: str,
+    *,
+    default: int,
+    maximum: int,
+) -> int:
+    value = payload.get(name, default)
+    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= maximum:
+        raise ValueError(f"{name} 必须是 1 到 {maximum} 的整数")
+    return value
+
+
+def _mobile_source_value(payload: dict[str, object]) -> Literal["agent"] | None:
+    value = payload.get("source")
+    if value is None:
+        return None
+    if value != "agent":
+        raise ValueError("source 只支持 agent")
+    return "agent"
+
+
+def _required_mobile_string(payload: dict[str, object], name: str) -> str:
+    value = payload.get(name)
+    if not isinstance(value, str) or not value or len(value) > 512:
+        raise ValueError(f"{name} 必须是 1 到 512 字符的字符串")
+    return value
+
+
+def _model_usage_int(model_usage: Mapping[str, object], name: str) -> int | None:
+    value = model_usage.get(name)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _to_proactive_turn_trace(event: ProactiveFinished):

@@ -40,6 +40,8 @@ class TurnTrace:
     session_key: str
     user_msg: str | None            # 用户原文
     llm_output: str                 # LLM 最终输出完整文本
+    turn_id: str | None = None
+    assistant_message_id: str | None = None
     raw_llm_output: str | None = None       # 装饰/清洗前的原始模型输出
     meme_tag: str | None = None             # 命中的 <meme:tag>
     meme_media_count: int | None = None     # 命中的媒体数量
@@ -57,6 +59,7 @@ class TurnTrace:
     react_input_sum_tokens: int | None = None
     react_input_peak_tokens: int | None = None
     react_final_input_tokens: int | None = None
+    model_output_tokens: int | None = None
     react_cache_prompt_tokens: int | None = None
     react_cache_hit_tokens: int | None = None
 

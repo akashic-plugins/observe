@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS turns (
     ts          TEXT    NOT NULL,
     source      TEXT    NOT NULL,
     session_key TEXT    NOT NULL,
+    turn_id     TEXT,
+    assistant_message_id TEXT,
     user_msg    TEXT,
     llm_output  TEXT    NOT NULL DEFAULT '',
     raw_llm_output TEXT,
@@ -32,6 +34,7 @@ CREATE TABLE IF NOT EXISTS turns (
     react_input_sum_tokens INTEGER,
     react_input_peak_tokens INTEGER,
     react_final_input_tokens INTEGER,
+    model_output_tokens INTEGER,
     react_cache_prompt_tokens INTEGER,
     react_cache_hit_tokens INTEGER,
     error       TEXT                        -- NULL = 正常
@@ -100,6 +103,8 @@ CREATE INDEX IF NOT EXISTS ix_gerr_type ON global_errors (error_type, last_ts);
 
 
 _TURNS_COLUMNS: dict[str, str] = {
+    "turn_id": "TEXT",
+    "assistant_message_id": "TEXT",
     "tool_chain_json": "TEXT",
     "raw_llm_output": "TEXT",
     "meme_tag": "TEXT",
@@ -114,6 +119,7 @@ _TURNS_COLUMNS: dict[str, str] = {
     "react_input_sum_tokens": "INTEGER",
     "react_input_peak_tokens": "INTEGER",
     "react_final_input_tokens": "INTEGER",
+    "model_output_tokens": "INTEGER",
     "react_cache_prompt_tokens": "INTEGER",
     "react_cache_hit_tokens": "INTEGER",
 }
@@ -127,6 +133,14 @@ def _ensure_turns_columns(conn: sqlite3.Connection) -> None:
         if col in cols:
             continue
         _ = conn.execute(f"ALTER TABLE turns ADD COLUMN {col} {ddl}")
+    _ = conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_turn_id "
+        "ON turns (turn_id) WHERE turn_id IS NOT NULL"
+    )
+    _ = conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_assistant_message_id "
+        "ON turns (assistant_message_id) WHERE assistant_message_id IS NOT NULL"
+    )
 
 def _migrate_removed_proactive_observe(conn: sqlite3.Connection) -> None:
     _ = conn.execute("DROP TABLE IF EXISTS proactive_decisions")

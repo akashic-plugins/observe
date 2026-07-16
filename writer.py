@@ -122,22 +122,26 @@ def _write_turn(conn, e: TurnTrace, ts: str) -> None:
         conn.execute(
             """
             INSERT INTO turns (
-                ts, source, session_key, user_msg, llm_output,
+                ts, source, session_key, turn_id, assistant_message_id,
+                user_msg, llm_output,
                 raw_llm_output, meme_tag, meme_media_count,
                 tool_calls, tool_chain_json,
                 history_window, history_messages, history_chars,
                 history_tokens, prompt_tokens, next_turn_baseline_tokens,
                 react_iteration_count, react_input_sum_tokens,
                 react_input_peak_tokens, react_final_input_tokens,
+                model_output_tokens,
                 react_cache_prompt_tokens, react_cache_hit_tokens,
                 error
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts,
                 e.source,
                 e.session_key,
+                e.turn_id,
+                e.assistant_message_id,
                 e.user_msg,
                 e.llm_output,
                 e.raw_llm_output,
@@ -155,6 +159,7 @@ def _write_turn(conn, e: TurnTrace, ts: str) -> None:
                 e.react_input_sum_tokens,
                 e.react_input_peak_tokens,
                 e.react_final_input_tokens,
+                e.model_output_tokens,
                 e.react_cache_prompt_tokens,
                 e.react_cache_hit_tokens,
                 e.error,
