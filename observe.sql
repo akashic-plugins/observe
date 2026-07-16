@@ -40,7 +40,6 @@ CREATE TABLE IF NOT EXISTS turns (
 
 CREATE INDEX IF NOT EXISTS ix_turns_sk_ts ON turns (session_key, ts);
 CREATE INDEX IF NOT EXISTS ix_turns_source ON turns (source, ts);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_turn_id ON turns (turn_id) WHERE turn_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_assistant_message_id ON turns (assistant_message_id) WHERE assistant_message_id IS NOT NULL;
 
 -- ─────────────────────────────────────────────

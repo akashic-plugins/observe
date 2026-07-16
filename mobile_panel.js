@@ -26,6 +26,20 @@ function sourceLabel(value) {
 
 const usageRequests = new Map();
 
+function wait(delay) {
+  return new Promise((resolve) => window.setTimeout(resolve, delay));
+}
+
+async function requestMessageUsage(context, messageId) {
+  const delays = [0, 100, 300, 700];
+  for (const delay of delays) {
+    if (delay > 0) await wait(delay);
+    const result = await context.request("kvcache.message_usage", { message_id: messageId });
+    if (result.usage) return result;
+  }
+  return { usage: null };
+}
+
 function messageUsage(host, context) {
   let active = true;
   const messageId = context.messageId;
@@ -35,11 +49,15 @@ function messageUsage(host, context) {
   const key = `${sessionId}\n${messageId}`;
   let request = usageRequests.get(key);
   if (!request) {
-    request = context.request("kvcache.message_usage", { message_id: messageId });
+    request = requestMessageUsage(context, messageId);
     usageRequests.set(key, request);
   }
   request.then((result) => {
-    if (!active || !result.usage) return;
+    if (!result.usage) {
+      usageRequests.delete(key);
+      return;
+    }
+    if (!active) return;
     const usage = result.usage;
     const row = document.createElement("div");
     row.className = "observe-kv-tail";

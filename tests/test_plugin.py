@@ -112,7 +112,7 @@ def test_turn_trace_keeps_message_identity_and_output_tokens(tmp_path: Path) -> 
             tools_used=[],
             turn_id="turn-1",
             assistant_message_id="mobile:demo:2",
-            model_usage={"output_tokens": 321},
+            model_usage={"output_tokens": 321, "coverage": "exact"},
         ),
     )
 
@@ -130,6 +130,40 @@ def test_turn_trace_keeps_message_identity_and_output_tokens(tmp_path: Path) -> 
     finally:
         conn.close()
     assert row == ("turn-1", "mobile:demo:2", 321)
+
+
+def test_partial_usage_and_empty_turn_ids_do_not_claim_complete_output(
+    tmp_path: Path,
+) -> None:
+    emitter = _Emitter()
+    for index in range(2):
+        module._emit_turn_trace(
+            emitter,
+            TurnCommitted(
+                session_key="mobile:demo",
+                channel="mobile",
+                chat_id="demo",
+                input_message="hi",
+                persisted_user_message="hi",
+                assistant_response="hello",
+                tools_used=[],
+                assistant_message_id=f"mobile:demo:{index + 2}",
+                model_usage={"output_tokens": 100, "coverage": "partial"},
+            ),
+        )
+
+    assert all(event.turn_id is None for event in emitter.events)
+    assert all(event.model_output_tokens is None for event in emitter.events)
+    db_module = sys.modules[f"{module.__name__}.db"]
+    conn = db_module.open_db(tmp_path / "observe.db")
+    try:
+        writer = module.TraceWriter(tmp_path / "observe.db")
+        for event in emitter.events:
+            writer._write_one(conn, event)
+        count = conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 2
 
 
 @pytest.mark.asyncio

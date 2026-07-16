@@ -171,7 +171,7 @@ def _emit_turn_trace(writer: _ObserveWriter, event: TurnCommitted) -> None:
         TurnTraceEvent(
             source="agent",
             session_key=event.session_key,
-            turn_id=event.turn_id,
+            turn_id=event.turn_id or None,
             assistant_message_id=event.assistant_message_id,
             user_msg=event.persisted_user_message,
             llm_output=event.assistant_response,
@@ -234,6 +234,8 @@ def _required_mobile_string(payload: dict[str, object], name: str) -> str:
 
 
 def _model_usage_int(model_usage: Mapping[str, object], name: str) -> int | None:
+    if model_usage.get("coverage") != "exact":
+        return None
     value = model_usage.get(name)
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 

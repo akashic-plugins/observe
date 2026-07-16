@@ -1,7 +1,24 @@
 .observe-kv {
+  --observe-kv-current: #2769d7;
+  --observe-kv-current-ink: #fbfcff;
+  --observe-kv-passive: #5fc9cb;
+  --observe-kv-passive-ink: #123b43;
+  --observe-kv-proactive: #cf9de3;
+  --observe-kv-proactive-ink: #452452;
   color: var(--m-on-surface);
   font-family: Roboto, "Noto Sans SC", system-ui, sans-serif;
   font-synthesis: none;
+}
+
+@supports (color: oklch(0 0 0)) {
+  .observe-kv {
+    --observe-kv-current: oklch(0.58 0.19 255);
+    --observe-kv-current-ink: oklch(0.985 0.006 255);
+    --observe-kv-passive: oklch(0.78 0.12 195);
+    --observe-kv-passive-ink: oklch(0.27 0.055 210);
+    --observe-kv-proactive: oklch(0.76 0.12 310);
+    --observe-kv-proactive-ink: oklch(0.3 0.065 305);
+  }
 }
 
 .observe-kv-loading {
@@ -27,8 +44,8 @@
   place-items: center;
   border-radius: 22px;
   padding: 14px 10px;
-  color: var(--m-cache-current-ink);
-  background: var(--m-cache-current);
+  color: var(--observe-kv-current-ink);
+  background: var(--observe-kv-current);
   text-align: center;
 }
 
@@ -46,8 +63,8 @@
   place-items: center;
   border-radius: 50%;
   background: conic-gradient(
-    var(--m-cache-current-ink) 0 var(--observe-kv-rate),
-    color-mix(in oklch, var(--m-cache-current-ink) 22%, transparent) var(--observe-kv-rate) 100%
+    var(--observe-kv-current-ink) 0 var(--observe-kv-rate),
+    color-mix(in oklch, var(--observe-kv-current-ink) 22%, transparent) var(--observe-kv-rate) 100%
   );
 }
 
@@ -56,7 +73,7 @@
   width: 70px;
   height: 70px;
   border-radius: 50%;
-  background: var(--m-cache-current);
+  background: var(--observe-kv-current);
   content: "";
 }
 
@@ -83,13 +100,13 @@
 }
 
 .observe-kv-passive {
-  color: var(--m-cache-passive-ink);
-  background: var(--m-cache-passive);
+  color: var(--observe-kv-passive-ink);
+  background: var(--observe-kv-passive);
 }
 
 .observe-kv-proactive {
-  color: var(--m-cache-proactive-ink);
-  background: var(--m-cache-proactive);
+  color: var(--observe-kv-proactive-ink);
+  background: var(--observe-kv-proactive);
 }
 
 .observe-kv-sources strong {

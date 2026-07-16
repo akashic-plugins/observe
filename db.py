@@ -133,10 +133,7 @@ def _ensure_turns_columns(conn: sqlite3.Connection) -> None:
         if col in cols:
             continue
         _ = conn.execute(f"ALTER TABLE turns ADD COLUMN {col} {ddl}")
-    _ = conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_turn_id "
-        "ON turns (turn_id) WHERE turn_id IS NOT NULL"
-    )
+    _ = conn.execute("DROP INDEX IF EXISTS ux_turns_turn_id")
     _ = conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_assistant_message_id "
         "ON turns (assistant_message_id) WHERE assistant_message_id IS NOT NULL"
