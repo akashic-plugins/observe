@@ -36,7 +36,63 @@ test("turn tail retries until observe writer exposes exact usage", async () => {
   await new Promise((resolve) => setTimeout(resolve, 500));
 
   assert.equal(calls, 3);
-  assert.match(host.child.innerHTML, /本轮输出/);
-  assert.match(host.child.innerHTML, /321/);
+  assert.match(host.child.innerHTML, /输出/);
+  assert.match(host.child.innerHTML, /321 tokens/);
+  assert.doesNotMatch(host.child.innerHTML, /observe-kv-tail__marker/);
+  cleanup();
+});
+
+test("dashboard only colors cache lanes with real data", async () => {
+  const states = new Map();
+  const section = (name) => {
+    const state = {
+      empty: null,
+      strong: { textContent: "" },
+      span: { textContent: "" },
+    };
+    states.set(name, state);
+    return {
+      classList: { toggle(_className, enabled) { state.empty = enabled; } },
+      querySelector(selector) { return selector === "strong" ? state.strong : state.span; },
+    };
+  };
+  const elements = {
+    ".observe-kv-loading": { remove() {} },
+    ".observe-kv-content": { hidden: true },
+    ".observe-kv-ring": {
+      style: { setProperty() {} },
+      querySelector() { return { textContent: "" }; },
+    },
+    ".observe-kv-passive": section("passive"),
+    ".observe-kv-proactive": section("proactive"),
+    ".observe-kv-list header span": { textContent: "" },
+    ".observe-kv-turns": { append() {} },
+  };
+  globalThis.document = {
+    createElement() { return { className: "", textContent: "" }; },
+  };
+  const host = {
+    className: "",
+    innerHTML: "",
+    querySelector(selector) { return elements[selector]; },
+  };
+  const cleanup = panel.default.dashboard.mount(host, {
+    async request(method) {
+      if (method === "kvcache.overview") {
+        return {
+          passive: { tracked_turn_count: 1, hit_rate: 0.8 },
+          proactive: { tracked_turn_count: 0, hit_rate: null },
+        };
+      }
+      return { items: [], total: 0 };
+    },
+  });
+
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(states.get("passive").empty, false);
+  assert.equal(states.get("proactive").empty, true);
+  assert.equal(states.get("proactive").strong.textContent, "暂无记录");
   cleanup();
 });

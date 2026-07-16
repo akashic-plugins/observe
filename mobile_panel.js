@@ -63,8 +63,7 @@ function messageUsage(host, context) {
     row.className = "observe-kv-tail";
     row.setAttribute("aria-label", "本轮输出 Token");
     row.innerHTML = `
-      <span class="observe-kv-tail__marker" aria-hidden="true"></span>
-      <span>本轮输出 <strong>${number(usage.output_tokens)}</strong> tokens</span>`;
+      <span>输出 <strong>${number(usage.output_tokens)} tokens</strong></span>`;
     host.replaceChildren(row);
   }).catch((error) => {
     usageRequests.delete(key);
@@ -77,8 +76,10 @@ function messageUsage(host, context) {
 
 function metric(host, summary, className, title) {
   const section = host.querySelector(className);
-  section.querySelector("strong").textContent = rate(summary?.hit_rate);
-  section.querySelector("span").textContent = `${title} · ${number(summary?.tracked_turn_count)} 轮`;
+  const count = Number(summary?.tracked_turn_count || 0);
+  section.classList.toggle("empty", count === 0);
+  section.querySelector("strong").textContent = count === 0 ? "暂无记录" : rate(summary?.hit_rate);
+  section.querySelector("span").textContent = count === 0 ? title : `${title} · ${number(count)} 轮`;
 }
 
 function turnRow(turn) {
@@ -140,11 +141,11 @@ const dashboard = {
         <section class="observe-kv-overview" aria-label="KV Cache 概览">
           <div class="observe-kv-current">
             <div class="observe-kv-ring"><strong>—</strong></div>
-            <span>最近 10 次被动链路</span>
+            <span>近期被动复用</span>
           </div>
           <div class="observe-kv-sources">
-            <div class="observe-kv-passive"><strong>—</strong><span>全局被动</span></div>
-            <div class="observe-kv-proactive"><strong>—</strong><span>全局主动</span></div>
+            <div class="observe-kv-passive"><strong>—</strong><span>被动总览</span></div>
+            <div class="observe-kv-proactive"><strong>—</strong><span>主动链路</span></div>
           </div>
         </section>
         <section class="observe-kv-list" aria-labelledby="observe-kv-list-title">
@@ -168,8 +169,8 @@ const dashboard = {
       const ring = host.querySelector(".observe-kv-ring");
       ring.style.setProperty("--observe-kv-rate", `${Math.max(0, Math.min(1, recentRate || 0)) * 100}%`);
       ring.querySelector("strong").textContent = rate(recentRate);
-      metric(host, overview.passive, ".observe-kv-passive", "全局被动");
-      metric(host, overview.proactive, ".observe-kv-proactive", "全局主动");
+      metric(host, overview.passive, ".observe-kv-passive", "被动总览");
+      metric(host, overview.proactive, ".observe-kv-proactive", "主动链路");
       host.querySelector(".observe-kv-list header span").textContent = `${number(page.total)} 轮`;
       const list = host.querySelector(".observe-kv-turns");
       if (turns.length === 0) {
@@ -197,7 +198,7 @@ export default {
   },
   navigation: {
     label: "KV Cache",
-    description: "Token 复用与 Turn 明细",
+    description: "Observe · 缓存复用与 Turn 明细",
   },
   dashboard,
 };
