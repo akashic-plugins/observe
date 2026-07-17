@@ -31,6 +31,7 @@ test("turn tail retries until observe writer exposes exact usage", async () => {
   };
   let calls = 0;
   const cacheModes = [];
+  const messageId = "mobile:observe-seam:1";
   const host = {
     className: "",
     textContent: "",
@@ -39,10 +40,12 @@ test("turn tail retries until observe writer exposes exact usage", async () => {
     replaceChildren(child) { this.child = child; },
   };
   const cleanup = panel.default.slots["turn.after_answer"].mount(host, {
-    messageId: "mobile:demo:2",
-    sessionId: "mobile:demo",
-    async query(_method, _payload, options) {
+    messageId,
+    sessionId: "mobile:observe-seam",
+    async query(method, payload, options) {
       calls += 1;
+      assert.equal(method, "kvcache.message_usage");
+      assert.deepEqual(payload, { message_id: messageId });
       cacheModes.push(options.cache);
       return calls < 2 ? { usage: null } : { usage: { output_tokens: 321 } };
     },
