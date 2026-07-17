@@ -5,6 +5,7 @@ import json
 import logging
 from collections.abc import Mapping
 from contextlib import suppress
+from pathlib import Path
 from typing import Literal, Protocol, cast, runtime_checkable
 
 from agent.plugins import Plugin
@@ -12,6 +13,7 @@ from bus.events_lifecycle import ProactiveFinished, TurnCommitted
 from core.memory.events import MemoryWritten, RetrievalCompleted
 
 from .collector import GlobalErrorCollector
+from .dashboard import ObserveDashboardReader
 from .mobile_kvcache import KVCacheDashboardReader
 from .retention import run_retention_if_needed
 from .writer import TraceWriter
@@ -87,18 +89,23 @@ class ObservePlugin(Plugin):
         session_id: str | None,
         turn_id: str | None,
     ) -> dict[str, object]:
-        """返回 observe 自有的 KV Cache 移动投影。"""
+        """返回 Observe 自有的移动端只读投影。"""
 
         # 1. 在插件 RPC 边界校验方法与查询参数
         if method not in {
             "kvcache.overview",
             "kvcache.turns",
             "kvcache.message_usage",
+            "health.overview",
+            "health.errors",
+            "health.error_detail",
         }:
             raise ValueError(f"未知 observe 移动方法: {method}")
         workspace = self.context.workspace
         if workspace is None:
             raise RuntimeError("observe 移动看板缺少 workspace")
+        if method.startswith("health."):
+            return await self._mobile_health_call(method, payload, workspace)
         reader = KVCacheDashboardReader(workspace)
         if method == "kvcache.overview":
             return cast("dict[str, object]", await asyncio.to_thread(reader.get_summary))
@@ -129,6 +136,50 @@ class ObservePlugin(Plugin):
             "page": page,
             "page_size": page_size,
         }
+
+    async def _mobile_health_call(
+        self,
+        method: str,
+        payload: dict[str, object],
+        workspace: Path,
+    ) -> dict[str, object]:
+        """把 Observe 错误聚合裁成手机排障所需的只读投影。"""
+
+        # 1. 复用桌面聚合 owner，只在 RPC 边界限制时间范围和载荷体积
+        range_token = _mobile_range_value(payload)
+        reader = ObserveDashboardReader(workspace)
+        if method == "health.overview":
+            return cast(
+                "dict[str, object]",
+                await asyncio.to_thread(reader.get_global_overview, range_token),
+            )
+        if method == "health.errors":
+            result = await asyncio.to_thread(
+                reader.get_global_list,
+                range_token,
+                facet="type",
+                q="",
+            )
+            sections = cast("list[dict[str, object]]", result["sections"])
+            raw_items = cast("list[dict[str, object]]", sections[0]["items"])
+            items = [_mobile_error_summary(item) for item in raw_items[:50]]
+            return {
+                "range": range_token,
+                "items": cast("list[object]", items),
+                "types": len(raw_items),
+                "total": int(result["total"]),
+            }
+
+        # 2. 详情按用户展开时再读取，列表不搬运 traceback 和 occurrence
+        fingerprint = _required_mobile_string(payload, "fingerprint")
+        detail = await asyncio.to_thread(
+            reader.get_global_detail,
+            fingerprint,
+            range_token,
+        )
+        if not detail:
+            return {"error": None}
+        return {"error": _mobile_error_detail(detail)}
 
     def _observe_turn_committed(self, event: TurnCommitted) -> None:
         writer = getattr(self, "_writer", None)
@@ -224,6 +275,42 @@ def _mobile_source_value(payload: dict[str, object]) -> Literal["agent"] | None:
     if value != "agent":
         raise ValueError("source 只支持 agent")
     return "agent"
+
+
+def _mobile_range_value(payload: dict[str, object]) -> Literal["24h", "7d"]:
+    value = payload.get("range", "24h")
+    if value not in {"24h", "7d"}:
+        raise ValueError("range 只支持 24h 或 7d")
+    return cast("Literal['24h', '7d']", value)
+
+
+def _mobile_error_summary(item: dict[str, object]) -> dict[str, object]:
+    return {
+        "fingerprint": str(item["fingerprint"]),
+        "error_type": str(item["error_type"]),
+        "message": str(item["message"]),
+        "source": str(item["source"]),
+        "logger_name": str(item["logger_name"]),
+        "status": str(item["status"]),
+        "count": int(cast("int", item["count"])),
+        "last_ts": str(item["last_ts"]),
+        "sessions": int(cast("int", item["sessions"])),
+        "is_new": bool(item["is_new"]),
+        "is_spiking": bool(item["is_spiking"]),
+    }
+
+
+def _mobile_error_detail(item: dict[str, object]) -> dict[str, object]:
+    result = _mobile_error_summary(item)
+    traceback_text = str(item.get("traceback_text") or "")
+    result.update(
+        {
+            "first_ts": str(item["first_ts"]),
+            "traceback": traceback_text[:4000],
+            "occurrences": cast("list[object]", item.get("occurrences") or [])[:8],
+        }
+    )
+    return result
 
 
 def _required_mobile_string(payload: dict[str, object], name: str) -> str:

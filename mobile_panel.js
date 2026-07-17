@@ -131,28 +131,216 @@ function turnRow(turn) {
   return item;
 }
 
+export function healthState(summary) {
+  const types = Number(summary?.types || 0);
+  const spikes = Number(summary?.spiking_types || 0);
+  const fresh = Number(summary?.new_types || 0);
+  if (types === 0) {
+    return {
+      tone: "steady",
+      title: "运行平稳",
+      description: "最近 24 小时没有收集到需要处理的错误。",
+    };
+  }
+  if (spikes > 0) {
+    return {
+      tone: "urgent",
+      title: `${spikes} 类错误正在增加`,
+      description: `共 ${number(summary.total)} 次，先查看爆发项。`,
+    };
+  }
+  return {
+    tone: fresh > 0 ? "attention" : "active",
+    title: fresh > 0 ? `${fresh} 类新问题` : `${types} 类问题待查看`,
+    description: `最近 24 小时共 ${number(summary.total)} 次。`,
+  };
+}
+
+function healthDetailRow(label, value) {
+  const term = document.createElement("dt");
+  term.textContent = label;
+  const description = document.createElement("dd");
+  description.textContent = String(value || "—");
+  return [term, description];
+}
+
+function healthErrorRow(error, context) {
+  const item = document.createElement("article");
+  item.className = "observe-health-error";
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "observe-health-error__trigger";
+  trigger.setAttribute("aria-expanded", "false");
+  const copy = document.createElement("span");
+  copy.className = "observe-health-error__copy";
+  const title = document.createElement("strong");
+  title.textContent = error.error_type || "Error";
+  const message = document.createElement("span");
+  message.textContent = error.message || "没有错误摘要";
+  const meta = document.createElement("small");
+  meta.textContent = `${shortTime(error.last_ts)} · ${number(error.sessions)} 个会话`;
+  copy.append(title, message, meta);
+  const signal = document.createElement("span");
+  signal.className = "observe-health-error__signal";
+  const count = document.createElement("strong");
+  count.textContent = `${number(error.count)} 次`;
+  const state = document.createElement("small");
+  state.textContent = error.is_spiking ? "正在增加" : error.is_new ? "新出现" : "最近出现";
+  if (error.is_spiking) signal.dataset.tone = "urgent";
+  else if (error.is_new) signal.dataset.tone = "attention";
+  signal.append(count, state);
+  trigger.append(copy, signal);
+
+  const detail = document.createElement("div");
+  detail.className = "observe-health-error__detail";
+  detail.hidden = true;
+  let loaded = false;
+  trigger.addEventListener("click", async () => {
+    detail.hidden = !detail.hidden;
+    trigger.setAttribute("aria-expanded", String(!detail.hidden));
+    if (detail.hidden || loaded) return;
+    loaded = true;
+    detail.textContent = "正在读取现场…";
+    try {
+      const result = await context.request("health.error_detail", {
+        range: "24h",
+        fingerprint: error.fingerprint,
+      });
+      if (!result.error) {
+        detail.textContent = "这条错误已不在 Observe 中。";
+        return;
+      }
+      const data = result.error;
+      const fields = document.createElement("dl");
+      fields.append(
+        ...healthDetailRow("来源", data.logger_name || data.source),
+        ...healthDetailRow("首次出现", shortTime(data.first_ts)),
+        ...healthDetailRow("最近出现", shortTime(data.last_ts)),
+      );
+      detail.replaceChildren(fields);
+      if (data.traceback) {
+        const trace = document.createElement("pre");
+        trace.textContent = data.traceback;
+        detail.append(trace);
+      }
+    } catch (requestError) {
+      loaded = false;
+      detail.textContent = requestError instanceof Error
+        ? `现场读取失败：${requestError.message}`
+        : "现场读取失败";
+    }
+  });
+  item.append(trigger, detail);
+  return item;
+}
+
+function renderHealth(host, context, summary, page) {
+  const state = healthState(summary);
+  const hero = host.querySelector(".observe-health-hero");
+  hero.dataset.tone = state.tone;
+  hero.querySelector("strong").textContent = state.title;
+  hero.querySelector("p").textContent = state.description;
+  const metrics = [
+    [".observe-health-total strong", summary.total],
+    [".observe-health-new strong", summary.new_types],
+    [".observe-health-spiking strong", summary.spiking_types],
+  ];
+  for (const [selector, value] of metrics) {
+    host.querySelector(selector).textContent = number(value);
+  }
+  host.querySelector(".observe-health-new").classList.toggle("empty", Number(summary.new_types || 0) === 0);
+  host.querySelector(".observe-health-spiking").classList.toggle("empty", Number(summary.spiking_types || 0) === 0);
+  const list = host.querySelector(".observe-health-errors");
+  const items = Array.isArray(page.items) ? page.items : [];
+  host.querySelector(".observe-health-list header span").textContent = `${number(page.types)} 类`;
+  if (items.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "observe-health-empty";
+    empty.textContent = "这里会显示需要关注的运行问题。";
+    list.append(empty);
+  } else {
+    list.append(...items.map((error) => healthErrorRow(error, context)));
+  }
+}
+
 const dashboard = {
   mount(host, context) {
     let active = true;
+    let healthLoaded = false;
     host.className += " observe-kv";
     host.innerHTML = `
-      <div class="observe-kv-loading" role="status">正在读取 KV Cache…</div>
-      <div class="observe-kv-content" hidden>
-        <section class="observe-kv-overview" aria-label="KV Cache 概览">
-          <div class="observe-kv-current">
-            <div class="observe-kv-ring"><strong>—</strong></div>
-            <span>近期被动复用</span>
-          </div>
-          <div class="observe-kv-sources">
-            <div class="observe-kv-passive"><strong>—</strong><span>被动总览</span></div>
-            <div class="observe-kv-proactive"><strong>—</strong><span>主动链路</span></div>
-          </div>
-        </section>
-        <section class="observe-kv-list" aria-labelledby="observe-kv-list-title">
-          <header><h2 id="observe-kv-list-title">最近 Turn</h2><span></span></header>
-          <div class="observe-kv-turns"></div>
-        </section>
+      <div class="observe-view-switch" role="tablist" aria-label="Observe 看板">
+        <button type="button" role="tab" aria-selected="true" data-view="cache">缓存效率</button>
+        <button type="button" role="tab" aria-selected="false" data-view="health">运行健康</button>
+      </div>
+      <div class="observe-view" role="tabpanel" data-panel="cache">
+        <div class="observe-kv-loading" role="status">正在读取 KV Cache…</div>
+        <div class="observe-kv-content" hidden>
+          <section class="observe-kv-overview" aria-label="KV Cache 概览">
+            <div class="observe-kv-current">
+              <div class="observe-kv-ring"><strong>—</strong></div>
+              <span>近期被动复用</span>
+            </div>
+            <div class="observe-kv-sources">
+              <div class="observe-kv-passive"><strong>—</strong><span>被动总览</span></div>
+              <div class="observe-kv-proactive"><strong>—</strong><span>主动链路</span></div>
+            </div>
+          </section>
+          <section class="observe-kv-list" aria-labelledby="observe-kv-list-title">
+            <header><h2 id="observe-kv-list-title">最近 Turn</h2><span></span></header>
+            <div class="observe-kv-turns"></div>
+          </section>
+        </div>
+      </div>
+      <div class="observe-view" role="tabpanel" data-panel="health" hidden>
+        <div class="observe-health-loading" role="status">正在读取运行状态…</div>
+        <div class="observe-health-content" hidden>
+          <section class="observe-health-hero" data-tone="steady" aria-label="运行状态">
+            <span>最近 24 小时</span>
+            <strong>—</strong>
+            <p></p>
+          </section>
+          <section class="observe-health-metrics" aria-label="错误指标">
+            <div class="observe-health-total"><strong>0</strong><span>出现次数</span></div>
+            <div class="observe-health-new"><strong>0</strong><span>新类型</span></div>
+            <div class="observe-health-spiking"><strong>0</strong><span>正在增加</span></div>
+          </section>
+          <section class="observe-health-list" aria-labelledby="observe-health-list-title">
+            <header><h2 id="observe-health-list-title">最近问题</h2><span></span></header>
+            <div class="observe-health-errors"></div>
+          </section>
+        </div>
       </div>`;
+    const selectView = (view) => {
+      for (const button of host.querySelectorAll(".observe-view-switch button")) {
+        button.setAttribute("aria-selected", String(button.dataset.view === view));
+      }
+      for (const panel of host.querySelectorAll(".observe-view")) {
+        panel.hidden = panel.dataset.panel !== view;
+      }
+      if (view !== "health" || healthLoaded) return;
+      healthLoaded = true;
+      Promise.all([
+        context.request("health.overview", { range: "24h" }),
+        context.request("health.errors", { range: "24h" }),
+      ]).then(([summary, page]) => {
+        if (!active) return;
+        renderHealth(host, context, summary, page);
+        host.querySelector(".observe-health-loading").remove();
+        host.querySelector(".observe-health-content").hidden = false;
+      }).catch((error) => {
+        if (!active) return;
+        healthLoaded = false;
+        const loading = host.querySelector(".observe-health-loading");
+        loading.className = "observe-health-loading error";
+        loading.textContent = error instanceof Error
+          ? `运行状态读取失败：${error.message}`
+          : "运行状态读取失败";
+      });
+    };
+    for (const button of host.querySelectorAll(".observe-view-switch button")) {
+      button.addEventListener("click", () => selectView(button.dataset.view));
+    }
     const loading = host.querySelector(".observe-kv-loading");
     const content = host.querySelector(".observe-kv-content");
     Promise.all([
@@ -197,8 +385,8 @@ export default {
     "turn.after_answer": { mount: messageUsage },
   },
   navigation: {
-    label: "KV Cache",
-    description: "Observe · 缓存复用与 Turn 明细",
+    label: "Observe",
+    description: "缓存效率与运行健康",
   },
   dashboard,
 };

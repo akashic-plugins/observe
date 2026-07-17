@@ -5,6 +5,7 @@ import importlib.util
 import sqlite3
 import sys
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -205,6 +206,83 @@ async def test_mobile_message_usage_returns_true_output_tokens(tmp_path: Path) -
     assert result == {"usage": {"output_tokens": 321}}
     assert ObservePlugin.mobile_ui_module() == "mobile_panel.js"
     assert ObservePlugin.mobile_ui_stylesheet() == "mobile_panel.css"
+
+
+@pytest.mark.asyncio
+async def test_mobile_health_reuses_global_error_projection(tmp_path: Path) -> None:
+    plugin = ObservePlugin()
+    plugin.context = SimpleNamespace(workspace=tmp_path)
+    db_module = sys.modules[f"{module.__name__}.db"]
+    conn = db_module.open_db(tmp_path / "observe" / "observe.db")
+    now = datetime.now(timezone.utc)
+    traceback_text = "Traceback\n" + ("failure detail\n" * 500)
+    try:
+        for offset, count in ((2, 1), (1, 1), (0, 5)):
+            moment = now - timedelta(hours=offset)
+            conn.execute(
+                """
+                INSERT INTO global_errors(
+                    fingerprint, bucket, source, logger_name, error_type,
+                    message, traceback_text, level, first_ts, last_ts,
+                    count, session_keys, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "fp-mobile-health",
+                    moment.isoformat()[:13],
+                    "asyncio",
+                    "agent.worker",
+                    "RuntimeError",
+                    "background task failed",
+                    traceback_text,
+                    "ERROR",
+                    (now - timedelta(hours=2)).isoformat(),
+                    moment.isoformat(),
+                    count,
+                    '["mobile:demo"]',
+                    "active",
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    overview = await plugin.mobile_ui_call(
+        "health.overview",
+        {"range": "24h"},
+        session_id=None,
+        turn_id=None,
+    )
+    errors = await plugin.mobile_ui_call(
+        "health.errors",
+        {"range": "24h"},
+        session_id=None,
+        turn_id=None,
+    )
+    detail = await plugin.mobile_ui_call(
+        "health.error_detail",
+        {"range": "24h", "fingerprint": "fp-mobile-health"},
+        session_id=None,
+        turn_id=None,
+    )
+
+    assert overview["total"] == 7
+    assert overview["types"] == 1
+    assert overview["spiking_types"] == 1
+    assert errors["types"] == 1
+    item = errors["items"][0]
+    assert item["error_type"] == "RuntimeError"
+    assert "traceback" not in item
+    assert detail["error"]["traceback"].startswith("Traceback")
+    assert len(detail["error"]["traceback"]) == 4000
+
+    with pytest.raises(ValueError, match="range 只支持"):
+        await plugin.mobile_ui_call(
+            "health.overview",
+            {"range": "all"},
+            session_id=None,
+            turn_id=None,
+        )
 
 
 def test_open_db_removes_legacy_unique_turn_id_index(tmp_path: Path) -> None:

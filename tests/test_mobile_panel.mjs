@@ -75,6 +75,7 @@ test("dashboard only colors cache lanes with real data", async () => {
     className: "",
     innerHTML: "",
     querySelector(selector) { return elements[selector]; },
+    querySelectorAll() { return []; },
   };
   const cleanup = panel.default.dashboard.mount(host, {
     async request(method) {
@@ -95,4 +96,19 @@ test("dashboard only colors cache lanes with real data", async () => {
   assert.equal(states.get("proactive").empty, true);
   assert.equal(states.get("proactive").strong.textContent, "暂无记录");
   cleanup();
+});
+
+test("health status uses color only for an actionable state", () => {
+  assert.deepEqual(panel.healthState({ total: 0, types: 0 }), {
+    tone: "steady",
+    title: "运行平稳",
+    description: "最近 24 小时没有收集到需要处理的错误。",
+  });
+  assert.deepEqual(panel.healthState({ total: 18, types: 3, new_types: 1, spiking_types: 2 }), {
+    tone: "urgent",
+    title: "2 类错误正在增加",
+    description: "共 18 次，先查看爆发项。",
+  });
+  assert.equal(panel.default.navigation.label, "Observe");
+  assert.equal(panel.default.navigation.description, "缓存效率与运行健康");
 });
