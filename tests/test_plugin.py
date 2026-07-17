@@ -5,16 +5,33 @@ import importlib.util
 import sqlite3
 import sys
 import threading
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
+from agent.core.runtime_support import TurnRunResult
+from agent.lifecycle.phase import Phase
+from agent.lifecycle.phases.after_reasoning import (
+    AfterReasoningFrame,
+    default_after_reasoning_modules,
+)
+from agent.lifecycle.phases.after_turn import (
+    AfterTurnFrame,
+    default_after_turn_modules,
+)
+from agent.lifecycle.types import AfterReasoningInput, TurnSnapshot, TurnState
+from agent.looping.ports import SessionServices
 from agent.plugins.context import PluginContext, PluginKVStore
 from agent.plugins.scope import PluginScope, ScopedEventBus
 from bus.event_bus import EventBus
+from bus.events import InboundMessage
 from bus.events_lifecycle import TurnCommitted
+from session.manager import SessionManager
 
 
 def _load_plugin_module():
@@ -39,10 +56,127 @@ GlobalErrorCollector = module.GlobalErrorCollector
 
 class _Emitter:
     def __init__(self) -> None:
-        self.events: list[object] = []
+        self.events: list[Any] = []
 
     def emit(self, event: object) -> None:
         self.events.append(event)
+
+
+class _DiscardOutbound:
+    async def dispatch(self, outbound: object) -> bool:
+        return True
+
+
+async def _run_mobile_turn_observe_seam(
+    root: Path,
+    *,
+    clear_assistant_message_id: bool,
+) -> dict[str, object]:
+    """运行真实 mobile 持久化与 Observe 查询缝隙。"""
+
+    workspace = root / "workspace"
+    event_bus = EventBus()
+    scope = PluginScope("observe")
+    plugin = ObservePlugin()
+    plugin.context = PluginContext(
+        event_bus=ScopedEventBus(event_bus, scope),
+        tool_registry=None,
+        plugin_id="observe",
+        plugin_dir=Path(__file__).parents[1],
+        data_dir=workspace / "plugin-data/observe-builtin",
+        kv_store=PluginKVStore(workspace / "plugin-data/observe-builtin/.kv.json"),
+        workspace=workspace,
+        scope=scope,
+    )
+    manager = SessionManager(workspace)
+    committed: list[TurnCommitted] = []
+    event_bus.on(TurnCommitted, committed.append)
+    try:
+        # 1. 用真实 after-reasoning 持久化生成 assistant message ID
+        await plugin.initialize()
+        session = manager.get_or_create("mobile:observe-seam")
+        message = InboundMessage(
+            channel="mobile",
+            sender="device:observe-seam",
+            chat_id="observe-seam",
+            content="hi",
+            metadata={"client_message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+        )
+        state = TurnState(
+            msg=message,
+            session_key=session.key,
+            dispatch_outbound=False,
+            session=session,
+        )
+        after_reasoning = Phase(
+            default_after_reasoning_modules(
+                event_bus,
+                SessionServices(session_manager=manager),
+            ),
+            frame_factory=AfterReasoningFrame,
+        )
+        reasoning_result = await after_reasoning.run(
+            AfterReasoningInput(
+                state=state,
+                turn_result=TurnRunResult(
+                    reply="hello",
+                    context_retry={
+                        "react_stats": {
+                            "model_usage": {
+                                "coverage": "exact",
+                                "output_tokens": 321,
+                            }
+                        }
+                    },
+                ),
+            )
+        )
+        message_id = reasoning_result.outbound.session_message_id
+        assert message_id is not None
+        outbound = (
+            replace(reasoning_result.outbound, session_message_id=None)
+            if clear_assistant_message_id
+            else reasoning_result.outbound
+        )
+
+        # 2. 用真实 after-turn 发布 TurnCommitted，等待 Observe 落库
+        context = Mock()
+        context.render = Mock(return_value=SimpleNamespace(messages=[]))
+        context.last_debug_breakdown = []
+        after_turn = Phase(
+            default_after_turn_modules(
+                event_bus,
+                _DiscardOutbound(),
+                context,
+            ),
+            frame_factory=AfterTurnFrame,
+        )
+        await after_turn.run(
+            TurnSnapshot(
+                state=state,
+                outbound=outbound,
+                ctx=reasoning_result.ctx,
+            )
+        )
+        await plugin._writer.drain()
+
+        # 3. 从移动端公开查询读取同一条 assistant 消息
+        result = plugin.mobile_ui_query(
+            "kvcache.message_usage",
+            {"message_id": message_id},
+            session_id=session.key,
+            turn_id=None,
+        )
+        assert len(committed) == 1
+        return {
+            "persisted_message_id": message_id,
+            "committed_message_id": committed[0].assistant_message_id,
+            "query": result,
+        }
+    finally:
+        await plugin.terminate()
+        _ = await scope.aclose()
+        manager.close()
 
 
 @pytest.mark.asyncio
@@ -131,6 +265,37 @@ def test_turn_trace_keeps_message_identity_and_output_tokens(tmp_path: Path) -> 
     finally:
         conn.close()
     assert row == ("turn-1", "mobile:demo:2", 321)
+
+
+@pytest.mark.asyncio
+async def test_mobile_turn_identity_reaches_observe_usage_query(tmp_path: Path) -> None:
+    result = await _run_mobile_turn_observe_seam(
+        tmp_path / "healthy",
+        clear_assistant_message_id=False,
+    )
+
+    assert result == {
+        "persisted_message_id": "mobile:observe-seam:1",
+        "committed_message_id": "mobile:observe-seam:1",
+        "query": {"usage": {"output_tokens": 321}},
+    }
+
+
+@pytest.mark.asyncio
+async def test_mobile_turn_identity_mutant_is_killed(tmp_path: Path) -> None:
+    result = await _run_mobile_turn_observe_seam(
+        tmp_path / "mutant",
+        clear_assistant_message_id=True,
+    )
+
+    with pytest.raises(AssertionError):
+        assert result == {
+            "persisted_message_id": "mobile:observe-seam:1",
+            "committed_message_id": "mobile:observe-seam:1",
+            "query": {"usage": {"output_tokens": 321}},
+        }
+    assert result["committed_message_id"] is None
+    assert result["query"] == {"usage": None}
 
 
 def test_partial_usage_and_empty_turn_ids_do_not_claim_complete_output(
