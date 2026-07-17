@@ -41,6 +41,29 @@ CREATE TABLE IF NOT EXISTS turns (
 CREATE INDEX IF NOT EXISTS ix_turns_sk_ts ON turns (session_key, ts);
 CREATE INDEX IF NOT EXISTS ix_turns_source ON turns (source, ts);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_assistant_message_id ON turns (assistant_message_id) WHERE assistant_message_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_turns_cache_recent ON turns (ts DESC, id DESC) WHERE react_cache_prompt_tokens IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_turns_agent_cache_recent ON turns (ts DESC, id DESC) WHERE source = 'agent' AND react_cache_prompt_tokens IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS kv_cache_totals (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    turn_count INTEGER NOT NULL,
+    tracked_turn_count INTEGER NOT NULL,
+    prompt_tokens INTEGER NOT NULL,
+    hit_tokens INTEGER NOT NULL,
+    passive_prompt_tokens INTEGER NOT NULL,
+    passive_hit_tokens INTEGER NOT NULL,
+    passive_tracked_turn_count INTEGER NOT NULL,
+    proactive_prompt_tokens INTEGER NOT NULL,
+    proactive_hit_tokens INTEGER NOT NULL,
+    proactive_tracked_turn_count INTEGER NOT NULL,
+    last_tracked_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS kv_cache_projection_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    schema_version INTEGER NOT NULL,
+    last_turn_id INTEGER NOT NULL
+);
 
 -- ─────────────────────────────────────────────
 -- 2. rag_queries  当前 memory 检索记录

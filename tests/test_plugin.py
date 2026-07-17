@@ -167,8 +167,7 @@ def test_partial_usage_and_empty_turn_ids_do_not_claim_complete_output(
     assert count == 2
 
 
-@pytest.mark.asyncio
-async def test_mobile_message_usage_returns_true_output_tokens(tmp_path: Path) -> None:
+def test_mobile_message_usage_returns_true_output_tokens(tmp_path: Path) -> None:
     plugin = ObservePlugin()
     plugin.context = SimpleNamespace(workspace=tmp_path)
     db_module = sys.modules[f"{module.__name__}.db"]
@@ -196,7 +195,7 @@ async def test_mobile_message_usage_returns_true_output_tokens(tmp_path: Path) -
     finally:
         conn.close()
 
-    result = await plugin.mobile_ui_call(
+    result = plugin.mobile_ui_query(
         "kvcache.message_usage",
         {"message_id": "mobile:demo:2"},
         session_id="mobile:demo",
@@ -204,12 +203,14 @@ async def test_mobile_message_usage_returns_true_output_tokens(tmp_path: Path) -
     )
 
     assert result == {"usage": {"output_tokens": 321}}
-    assert ObservePlugin.mobile_ui_module() == "mobile_panel.js"
-    assert ObservePlugin.mobile_ui_stylesheet() == "mobile_panel.css"
+    contribution = ObservePlugin.mobile_ui()
+    assert contribution.module == "mobile_panel.js"
+    assert contribution.stylesheet == "mobile_panel.css"
+    assert contribution.navigation.label == "Observe"
+    assert contribution.slots == ("turn.after_answer",)
 
 
-@pytest.mark.asyncio
-async def test_mobile_health_reuses_global_error_projection(tmp_path: Path) -> None:
+def test_mobile_health_reuses_global_error_projection(tmp_path: Path) -> None:
     plugin = ObservePlugin()
     plugin.context = SimpleNamespace(workspace=tmp_path)
     db_module = sys.modules[f"{module.__name__}.db"]
@@ -271,13 +272,13 @@ async def test_mobile_health_reuses_global_error_projection(tmp_path: Path) -> N
     finally:
         conn.close()
 
-    snapshot = await plugin.mobile_ui_call(
+    snapshot = plugin.mobile_ui_query(
         "health.snapshot",
         {"range": "24h"},
         session_id=None,
         turn_id=None,
     )
-    detail = await plugin.mobile_ui_call(
+    detail = plugin.mobile_ui_query(
         "health.error_detail",
         {"range": "24h", "fingerprint": "fp-mobile-health"},
         session_id=None,
@@ -301,7 +302,7 @@ async def test_mobile_health_reuses_global_error_projection(tmp_path: Path) -> N
         conn.commit()
     finally:
         conn.close()
-    ignored = await plugin.mobile_ui_call(
+    ignored = plugin.mobile_ui_query(
         "health.snapshot",
         {"range": "24h"},
         session_id=None,
@@ -318,7 +319,7 @@ async def test_mobile_health_reuses_global_error_projection(tmp_path: Path) -> N
 
     for invalid_range in ("all", [], {}, True, None):
         with pytest.raises(ValueError, match="range 只支持"):
-            await plugin.mobile_ui_call(
+            plugin.mobile_ui_query(
                 "health.snapshot",
                 {"range": invalid_range},
                 session_id=None,
@@ -356,3 +357,138 @@ def test_open_db_removes_legacy_unique_turn_id_index(tmp_path: Path) -> None:
     finally:
         migrated.close()
     assert legacy_index is None
+
+
+def test_kvcache_bootstrap_uses_incremental_projection_and_one_snapshot(
+    tmp_path: Path,
+) -> None:
+    db_module = sys.modules[f"{module.__name__}.db"]
+    events_module = sys.modules[f"{module.__name__}.events"]
+    db_path = tmp_path / "observe" / "observe.db"
+    conn = db_module.open_db(db_path)
+    writer = module.TraceWriter(db_path)
+    try:
+        writer._write_one(
+            conn,
+            events_module.TurnTrace(
+                source="agent",
+                session_key="mobile:demo",
+                user_msg="passive",
+                llm_output="ok",
+                react_cache_prompt_tokens=100,
+                react_cache_hit_tokens=80,
+            ),
+        )
+        writer._write_one(
+            conn,
+            events_module.TurnTrace(
+                source="proactive",
+                session_key="proactive:demo",
+                user_msg="proactive",
+                llm_output="ok",
+                react_cache_prompt_tokens=50,
+                react_cache_hit_tokens=20,
+            ),
+        )
+    finally:
+        conn.close()
+
+    plugin = ObservePlugin()
+    plugin.context = SimpleNamespace(workspace=tmp_path)
+    bootstrap = plugin.mobile_ui_query(
+        "kvcache.bootstrap",
+        {},
+        session_id=None,
+        turn_id=None,
+    )
+
+    assert bootstrap["snapshot_turn_id"] == 2
+    assert bootstrap["projection_through_turn_id"] == 2
+    assert bootstrap["overview"]["tracked_turn_count"] == 2
+    assert bootstrap["overview"]["hit_tokens"] == 100
+    assert bootstrap["recent"]["total"] == 2
+    assert bootstrap["recent_agent"]["total"] == 1
+
+
+def test_kvcache_bootstrap_fails_loudly_on_projection_drift(tmp_path: Path) -> None:
+    db_module = sys.modules[f"{module.__name__}.db"]
+    db_path = tmp_path / "observe" / "observe.db"
+    conn = db_module.open_db(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO turns(ts, source, session_key, llm_output) VALUES (?, ?, ?, ?)",
+            ("2026-07-17T00:00:00+00:00", "agent", "mobile:demo", "ok"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    plugin = ObservePlugin()
+    plugin.context = SimpleNamespace(workspace=tmp_path)
+    with pytest.raises(RuntimeError, match="投影水位不一致"):
+        plugin.mobile_ui_query(
+            "kvcache.bootstrap",
+            {},
+            session_id=None,
+            turn_id=None,
+        )
+
+
+def test_turn_and_projection_update_roll_back_together(tmp_path: Path) -> None:
+    db_module = sys.modules[f"{module.__name__}.db"]
+    events_module = sys.modules[f"{module.__name__}.events"]
+    db_path = tmp_path / "observe.db"
+    conn = db_module.open_db(db_path)
+    try:
+        conn.execute("DELETE FROM kv_cache_totals")
+        conn.commit()
+        with pytest.raises(RuntimeError, match="singleton"):
+            module.TraceWriter(db_path)._write_one(
+                conn,
+                events_module.TurnTrace(
+                    source="agent",
+                    session_key="mobile:demo",
+                    user_msg="must roll back",
+                    llm_output="ok",
+                    react_cache_prompt_tokens=10,
+                    react_cache_hit_tokens=5,
+                ),
+            )
+        assert conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_retention_rebuilds_projection_in_the_delete_transaction(tmp_path: Path) -> None:
+    db_module = sys.modules[f"{module.__name__}.db"]
+    retention_module = sys.modules[f"{module.__name__}.retention"]
+    db_path = tmp_path / "observe" / "observe.db"
+    conn = db_module.open_db(db_path)
+    try:
+        conn.executemany(
+            """
+            INSERT INTO turns(
+                ts, source, session_key, user_msg, llm_output,
+                react_cache_prompt_tokens, react_cache_hit_tokens
+            ) VALUES (?, 'agent', 'mobile:demo', ?, 'ok', ?, ?)
+            """,
+            [
+                ("2020-01-01T00:00:00+00:00", "expired", 100, 80),
+                (datetime.now(timezone.utc).isoformat(), "current", 50, 20),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    migrated = db_module.open_db(db_path)
+    migrated.close()
+
+    retention_module._run_cleanup(db_path)
+
+    bootstrap = sys.modules[f"{module.__name__}.mobile_kvcache"].KVCacheDashboardReader(
+        tmp_path
+    ).get_bootstrap()
+    assert bootstrap["overview"]["tracked_turn_count"] == 1
+    assert bootstrap["overview"]["prompt_tokens"] == 50
+    assert bootstrap["recent"]["items"][0]["user_preview"] == "current"
+    assert bootstrap["snapshot_turn_id"] == bootstrap["projection_through_turn_id"] == 2

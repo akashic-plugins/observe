@@ -78,6 +78,7 @@ class TraceWriter:
                     self._write_one(conn, event)
                 except Exception:
                     logger.exception("observe write failed for %s", type(event).__name__)
+                    raise
                 finally:
                     self._queue.task_done()
         finally:
@@ -90,7 +91,8 @@ class TraceWriter:
                 try:
                     self._write_one(conn, e)
                 except Exception:
-                    pass
+                    logger.exception("observe shutdown flush failed for %s", type(e).__name__)
+                    raise
                 finally:
                     self._queue.task_done()
             conn.close()
@@ -119,7 +121,7 @@ class TraceWriter:
 
 def _write_turn(conn, e: TurnTrace, ts: str) -> None:
     with conn:
-        conn.execute(
+        cursor = conn.execute(
             """
             INSERT INTO turns (
                 ts, source, session_key, turn_id, assistant_message_id,
@@ -165,6 +167,50 @@ def _write_turn(conn, e: TurnTrace, ts: str) -> None:
                 e.error,
             ),
         )
+        turn_id = int(cursor.lastrowid)
+        tracked = e.react_cache_prompt_tokens is not None
+        prompt_tokens = int(e.react_cache_prompt_tokens or 0)
+        hit_tokens = int(e.react_cache_hit_tokens or 0)
+        passive = tracked and e.source == "agent"
+        proactive = tracked and e.source in {"proactive", "drift"}
+        totals_update = conn.execute(
+            """
+            UPDATE kv_cache_totals SET
+                turn_count = turn_count + 1,
+                tracked_turn_count = tracked_turn_count + ?,
+                prompt_tokens = prompt_tokens + ?,
+                hit_tokens = hit_tokens + ?,
+                passive_prompt_tokens = passive_prompt_tokens + ?,
+                passive_hit_tokens = passive_hit_tokens + ?,
+                passive_tracked_turn_count = passive_tracked_turn_count + ?,
+                proactive_prompt_tokens = proactive_prompt_tokens + ?,
+                proactive_hit_tokens = proactive_hit_tokens + ?,
+                proactive_tracked_turn_count = proactive_tracked_turn_count + ?,
+                last_tracked_at = CASE WHEN ? THEN ? ELSE last_tracked_at END
+            WHERE id = 1
+            """,
+            (
+                int(tracked),
+                prompt_tokens,
+                hit_tokens,
+                prompt_tokens if passive else 0,
+                hit_tokens if passive else 0,
+                int(passive),
+                prompt_tokens if proactive else 0,
+                hit_tokens if proactive else 0,
+                int(proactive),
+                int(tracked),
+                ts,
+            ),
+        )
+        if totals_update.rowcount != 1:
+            raise RuntimeError("KV Cache 聚合投影缺少 singleton 行")
+        state_update = conn.execute(
+            "UPDATE kv_cache_projection_state SET last_turn_id = ? WHERE id = 1",
+            (turn_id,),
+        )
+        if state_update.rowcount != 1:
+            raise RuntimeError("KV Cache 投影水位缺少 singleton 行")
 
 
 def _write_rag(conn, e: RagQueryLog, ts: str) -> None:

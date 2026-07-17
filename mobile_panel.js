@@ -34,7 +34,7 @@ async function requestMessageUsage(context, messageId) {
   const delays = [0, 100, 300, 700];
   for (const delay of delays) {
     if (delay > 0) await wait(delay);
-    const result = await context.request("kvcache.message_usage", { message_id: messageId });
+    const result = await context.query("kvcache.message_usage", { message_id: messageId });
     if (result.usage) return result;
   }
   return { usage: null };
@@ -202,7 +202,7 @@ function healthErrorRow(error, context) {
     loaded = true;
     detail.textContent = "正在读取现场…";
     try {
-      const result = await context.request("health.error_detail", {
+      const result = await context.query("health.error_detail", {
         range: "24h",
         fingerprint: error.fingerprint,
       });
@@ -324,7 +324,7 @@ const dashboard = {
       }
       if (view !== "health" || healthLoaded) return;
       healthLoaded = true;
-      context.request("health.snapshot", { range: "24h" }).then((snapshot) => {
+      context.query("health.snapshot", { range: "24h" }).then((snapshot) => {
         if (!active) return;
         renderHealth(host, context, snapshot);
         host.querySelector(".observe-health-loading").remove();
@@ -362,12 +362,11 @@ const dashboard = {
     }
     const loading = host.querySelector(".observe-kv-loading");
     const content = host.querySelector(".observe-kv-content");
-    Promise.all([
-      context.request("kvcache.overview"),
-      context.request("kvcache.turns", { page: 1, page_size: 50 }),
-      context.request("kvcache.turns", { page: 1, page_size: 10, source: "agent" }),
-    ]).then(([overview, page, passivePage]) => {
+    context.query("kvcache.bootstrap").then((bootstrap) => {
       if (!active) return;
+      const overview = bootstrap.overview || {};
+      const page = bootstrap.recent || { items: [], total: 0 };
+      const passivePage = bootstrap.recent_agent || { items: [], total: 0 };
       const turns = Array.isArray(page.items) ? page.items : [];
       const recent = Array.isArray(passivePage.items) ? passivePage.items : [];
       const recentHit = recent.reduce((sum, turn) => sum + Number(turn.hit_tokens || 0), 0);
@@ -402,10 +401,6 @@ const dashboard = {
 export default {
   slots: {
     "turn.after_answer": { mount: messageUsage },
-  },
-  navigation: {
-    label: "Observe",
-    description: "缓存效率与运行健康",
   },
   dashboard,
 };

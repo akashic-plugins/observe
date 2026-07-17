@@ -41,6 +41,26 @@ CREATE TABLE IF NOT EXISTS turns (
 );
 CREATE INDEX IF NOT EXISTS ix_turns_sk_ts  ON turns (session_key, ts);
 CREATE INDEX IF NOT EXISTS ix_turns_source ON turns (source, ts);
+CREATE TABLE IF NOT EXISTS kv_cache_totals (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    turn_count INTEGER NOT NULL,
+    tracked_turn_count INTEGER NOT NULL,
+    prompt_tokens INTEGER NOT NULL,
+    hit_tokens INTEGER NOT NULL,
+    passive_prompt_tokens INTEGER NOT NULL,
+    passive_hit_tokens INTEGER NOT NULL,
+    passive_tracked_turn_count INTEGER NOT NULL,
+    proactive_prompt_tokens INTEGER NOT NULL,
+    proactive_hit_tokens INTEGER NOT NULL,
+    proactive_tracked_turn_count INTEGER NOT NULL,
+    last_tracked_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS kv_cache_projection_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    schema_version INTEGER NOT NULL,
+    last_turn_id INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS rag_queries (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,9 +158,71 @@ def _ensure_turns_columns(conn: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_assistant_message_id "
         "ON turns (assistant_message_id) WHERE assistant_message_id IS NOT NULL"
     )
+    _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_turns_cache_recent "
+        "ON turns (ts DESC, id DESC) "
+        "WHERE react_cache_prompt_tokens IS NOT NULL"
+    )
+    _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_turns_agent_cache_recent "
+        "ON turns (ts DESC, id DESC) "
+        "WHERE source = 'agent' AND react_cache_prompt_tokens IS NOT NULL"
+    )
 
 def _migrate_removed_proactive_observe(conn: sqlite3.Connection) -> None:
     _ = conn.execute("DROP TABLE IF EXISTS proactive_decisions")
+
+
+def _ensure_kv_cache_projection(conn: sqlite3.Connection) -> None:
+    """在启动边界校验并重建 KV 聚合投影。"""
+
+    # 1. 只有版本或水位不一致时才扫描历史表
+    max_turn_id = int(conn.execute("SELECT COALESCE(MAX(id), 0) FROM turns").fetchone()[0])
+    state = conn.execute(
+        "SELECT schema_version, last_turn_id FROM kv_cache_projection_state WHERE id = 1"
+    ).fetchone()
+    totals = conn.execute("SELECT 1 FROM kv_cache_totals WHERE id = 1").fetchone()
+    if state == (1, max_turn_id) and totals is not None:
+        return
+
+    # 2. 启动迁移显式回填，在线读取不静默修复失配
+    rebuild_kv_cache_projection(conn)
+
+
+def rebuild_kv_cache_projection(conn: sqlite3.Connection) -> None:
+    """从 turns 真相表完整重建 KV 聚合与水位。"""
+
+    max_turn_id = int(conn.execute("SELECT COALESCE(MAX(id), 0) FROM turns").fetchone()[0])
+    aggregate = conn.execute(
+        """
+        SELECT
+            COUNT(*),
+            SUM(CASE WHEN react_cache_prompt_tokens IS NOT NULL THEN 1 ELSE 0 END),
+            COALESCE(SUM(react_cache_prompt_tokens), 0),
+            COALESCE(SUM(react_cache_hit_tokens), 0),
+            COALESCE(SUM(CASE WHEN source = 'agent' THEN react_cache_prompt_tokens ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN source = 'agent' THEN react_cache_hit_tokens ELSE 0 END), 0),
+            SUM(CASE WHEN source = 'agent' AND react_cache_prompt_tokens IS NOT NULL THEN 1 ELSE 0 END),
+            COALESCE(SUM(CASE WHEN source IN ('proactive', 'drift') THEN react_cache_prompt_tokens ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN source IN ('proactive', 'drift') THEN react_cache_hit_tokens ELSE 0 END), 0),
+            SUM(CASE WHEN source IN ('proactive', 'drift') AND react_cache_prompt_tokens IS NOT NULL THEN 1 ELSE 0 END),
+            MAX(CASE WHEN react_cache_prompt_tokens IS NOT NULL THEN ts END)
+        FROM turns
+        """
+    ).fetchone()
+    conn.execute("DELETE FROM kv_cache_totals")
+    conn.execute(
+        "INSERT INTO kv_cache_totals VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        tuple(0 if value is None and index < 10 else value for index, value in enumerate(aggregate)),
+    )
+    conn.execute(
+        """
+        INSERT INTO kv_cache_projection_state(id, schema_version, last_turn_id)
+        VALUES (1, 1, ?)
+        ON CONFLICT(id) DO UPDATE SET schema_version = 1, last_turn_id = excluded.last_turn_id
+        """,
+        (max_turn_id,),
+    )
 
 
 def open_db(db_path: Path) -> sqlite3.Connection:
@@ -150,5 +232,6 @@ def open_db(db_path: Path) -> sqlite3.Connection:
     _ = conn.executescript(_SCHEMA_SQL)
     _ensure_turns_columns(conn)
     _migrate_removed_proactive_observe(conn)
+    _ensure_kv_cache_projection(conn)
     conn.commit()
     return conn

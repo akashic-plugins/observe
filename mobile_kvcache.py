@@ -19,22 +19,50 @@ class KVCacheDashboardReader:
             return _summary_from_row(None)
         with self._lock:
             with _connect(self.db_path) as db:
-                row = db.execute("""
-                    SELECT
-                        COUNT(*) AS turn_count,
-                        SUM(CASE WHEN react_cache_prompt_tokens IS NOT NULL THEN 1 ELSE 0 END) AS tracked_turn_count,
-                        COALESCE(SUM(react_cache_prompt_tokens), 0) AS prompt_tokens,
-                        COALESCE(SUM(react_cache_hit_tokens), 0) AS hit_tokens,
-                        COALESCE(SUM(CASE WHEN source = 'agent' THEN react_cache_prompt_tokens ELSE 0 END), 0) AS passive_prompt_tokens,
-                        COALESCE(SUM(CASE WHEN source = 'agent' THEN react_cache_hit_tokens ELSE 0 END), 0) AS passive_hit_tokens,
-                        SUM(CASE WHEN source = 'agent' AND react_cache_prompt_tokens IS NOT NULL THEN 1 ELSE 0 END) AS passive_tracked_turn_count,
-                        COALESCE(SUM(CASE WHEN source IN ('proactive', 'drift') THEN react_cache_prompt_tokens ELSE 0 END), 0) AS proactive_prompt_tokens,
-                        COALESCE(SUM(CASE WHEN source IN ('proactive', 'drift') THEN react_cache_hit_tokens ELSE 0 END), 0) AS proactive_hit_tokens,
-                        SUM(CASE WHEN source IN ('proactive', 'drift') AND react_cache_prompt_tokens IS NOT NULL THEN 1 ELSE 0 END) AS proactive_tracked_turn_count,
-                        MAX(CASE WHEN react_cache_prompt_tokens IS NOT NULL THEN ts ELSE NULL END) AS last_tracked_at
-                    FROM turns
-                    """).fetchone()
+                db.execute("BEGIN")
+                row, _, _ = _checked_projection(db)
         return _summary_from_row(row)
+
+    def get_bootstrap(self) -> dict[str, Any]:
+        """在一个 SQLite 快照中返回移动首屏的聚合与两组最近记录。"""
+
+        if not self.db_path.exists():
+            empty = _summary_from_row(None)
+            return {
+                "overview": empty,
+                "recent": {"items": [], "total": 0},
+                "recent_agent": {"items": [], "total": 0},
+                "snapshot_turn_id": 0,
+                "projection_through_turn_id": 0,
+            }
+
+        # 1. 固定同一个读事务，聚合与列表共享快照水位
+        with self._lock:
+            with _connect(self.db_path) as db:
+                db.execute("BEGIN")
+                row, snapshot_turn_id, projection_turn_id = _checked_projection(db)
+                overview = _summary_from_row(row)
+
+                # 2. 列表总数直接来自 O(1) 投影，只读取首屏需要的行
+                recent = _list_turns_in_snapshot(
+                    db,
+                    page_size=50,
+                    source=None,
+                    total=int(row["tracked_turn_count"]),
+                )
+                recent_agent = _list_turns_in_snapshot(
+                    db,
+                    page_size=10,
+                    source="agent",
+                    total=int(row["passive_tracked_turn_count"]),
+                )
+        return {
+            "overview": overview,
+            "recent": recent,
+            "recent_agent": recent_agent,
+            "snapshot_turn_id": snapshot_turn_id,
+            "projection_through_turn_id": projection_turn_id,
+        }
 
     def list_turns(
         self,
@@ -146,6 +174,52 @@ def _summary_from_row(row: sqlite3.Row | None) -> dict[str, Any]:
         "passive": passive,
         "proactive": proactive,
     }
+
+
+def _checked_projection(
+    db: sqlite3.Connection,
+) -> tuple[sqlite3.Row, int, int]:
+    row = db.execute("SELECT * FROM kv_cache_totals WHERE id = 1").fetchone()
+    state = db.execute(
+        "SELECT schema_version, last_turn_id FROM kv_cache_projection_state WHERE id = 1"
+    ).fetchone()
+    snapshot_turn_id = int(
+        db.execute("SELECT COALESCE(MAX(id), 0) FROM turns").fetchone()[0]
+    )
+    if row is None or state is None or int(state["schema_version"]) != 1:
+        raise RuntimeError("KV Cache 投影尚未初始化")
+    projection_turn_id = int(state["last_turn_id"])
+    if projection_turn_id != snapshot_turn_id:
+        raise RuntimeError(
+            "KV Cache 投影水位不一致: "
+            f"projection={projection_turn_id}, turns={snapshot_turn_id}"
+        )
+    return row, snapshot_turn_id, projection_turn_id
+
+
+def _list_turns_in_snapshot(
+    db: sqlite3.Connection,
+    *,
+    page_size: int,
+    source: Literal["agent"] | None,
+    total: int,
+) -> dict[str, Any]:
+    source_filter = "" if source is None else " AND source = 'agent'"
+    rows = db.execute(
+        f"""
+        SELECT
+            id, ts, source, session_key, user_msg,
+            react_cache_prompt_tokens AS prompt_tokens,
+            react_cache_hit_tokens AS hit_tokens
+        FROM turns
+        WHERE react_cache_prompt_tokens IS NOT NULL
+        {source_filter}
+        ORDER BY ts DESC, id DESC
+        LIMIT ?
+        """,
+        (page_size,),
+    ).fetchall()
+    return {"items": [_row_to_cache_turn(row) for row in rows], "total": total}
 
 
 def _source_summary_from_row(row: sqlite3.Row | None, prefix: str) -> dict[str, Any]:

@@ -8,7 +8,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Literal, Protocol, cast, runtime_checkable
 
-from agent.plugins import Plugin
+from agent.plugins import MobileUiContribution, MobileUiNavigation, Plugin
+from agent.plugins.mobile_ui import MobileUiRpcInvalidRequest
 from bus.events_lifecycle import ProactiveFinished, TurnCommitted
 from core.memory.events import MemoryWritten, RetrievalCompleted
 
@@ -32,15 +33,19 @@ class ObservePlugin(Plugin):
         return "dashboard.py"
 
     @classmethod
-    def mobile_ui_module(cls) -> str | None:
-        return "mobile_panel.js"
-
-    @classmethod
-    def mobile_ui_stylesheet(cls) -> str | None:
-        return "mobile_panel.css"
+    def mobile_ui(cls) -> MobileUiContribution:
+        return MobileUiContribution(
+            module="mobile_panel.js",
+            stylesheet="mobile_panel.css",
+            navigation=MobileUiNavigation(
+                label="Observe",
+                description="缓存效率与运行健康",
+            ),
+            slots=("turn.after_answer",),
+        )
 
     name = "observe"
-    version = "1.0.0"
+    version = "1.1.0"
 
     async def initialize(self) -> None:
         workspace = self.context.workspace
@@ -81,7 +86,7 @@ class ObservePlugin(Plugin):
             with suppress(asyncio.CancelledError):
                 await task
 
-    async def mobile_ui_call(
+    def mobile_ui_query(
         self,
         method: str,
         payload: dict[str, object],
@@ -93,50 +98,31 @@ class ObservePlugin(Plugin):
 
         # 1. 在插件 RPC 边界校验方法与查询参数
         if method not in {
-            "kvcache.overview",
-            "kvcache.turns",
+            "kvcache.bootstrap",
             "kvcache.message_usage",
             "health.snapshot",
             "health.error_detail",
         }:
-            raise ValueError(f"未知 observe 移动方法: {method}")
+            raise MobileUiRpcInvalidRequest(f"未知 observe 移动方法: {method}")
         workspace = self.context.workspace
         if workspace is None:
             raise RuntimeError("observe 移动看板缺少 workspace")
         if method.startswith("health."):
-            return await self._mobile_health_call(method, payload, workspace)
+            return self._mobile_health_query(method, payload, workspace)
         reader = KVCacheDashboardReader(workspace)
-        if method == "kvcache.overview":
-            return cast("dict[str, object]", await asyncio.to_thread(reader.get_summary))
+        if method == "kvcache.bootstrap":
+            return cast("dict[str, object]", reader.get_bootstrap())
         if method == "kvcache.message_usage":
             message_id = _required_mobile_string(payload, "message_id")
             if session_id is None:
-                raise ValueError("kvcache.message_usage 缺少 session_id")
-            usage = await asyncio.to_thread(
-                reader.get_message_usage,
+                raise MobileUiRpcInvalidRequest("kvcache.message_usage 缺少 session_id")
+            usage = reader.get_message_usage(
                 message_id=message_id,
                 session_key=session_id,
             )
             return {"usage": usage}
 
-        # 2. 列表查询复用 observe 的真实 Turn 数据
-        page = _mobile_page_value(payload, "page", default=1, maximum=10_000)
-        page_size = _mobile_page_value(payload, "page_size", default=25, maximum=50)
-        source = _mobile_source_value(payload)
-        items, total = await asyncio.to_thread(
-            reader.list_turns,
-            page=page,
-            page_size=page_size,
-            source=source,
-        )
-        return {
-            "items": cast("list[object]", items),
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-        }
-
-    async def _mobile_health_call(
+    def _mobile_health_query(
         self,
         method: str,
         payload: dict[str, object],
@@ -148,11 +134,7 @@ class ObservePlugin(Plugin):
         range_token = _mobile_range_value(payload)
         reader = ObserveDashboardReader(workspace)
         if method == "health.snapshot":
-            result = await asyncio.to_thread(
-                reader.get_mobile_global_health,
-                range_token,
-                limit=50,
-            )
+            result = reader.get_mobile_global_health(range_token, limit=50)
             raw_items = cast("list[dict[str, object]]", result["items"])
             return {
                 "range": range_token,
@@ -168,11 +150,7 @@ class ObservePlugin(Plugin):
 
         # 2. 详情按用户展开时再读取，列表不搬运 traceback 和 occurrence
         fingerprint = _required_mobile_string(payload, "fingerprint")
-        detail = await asyncio.to_thread(
-            reader.get_mobile_global_detail,
-            fingerprint,
-            range_token,
-        )
+        detail = reader.get_mobile_global_detail(fingerprint, range_token)
         if not detail:
             return {"error": None}
         return {"error": _mobile_error_detail(detail)}
@@ -251,32 +229,10 @@ def _emit_turn_trace(writer: _ObserveWriter, event: TurnCommitted) -> None:
     )
 
 
-def _mobile_page_value(
-    payload: dict[str, object],
-    name: str,
-    *,
-    default: int,
-    maximum: int,
-) -> int:
-    value = payload.get(name, default)
-    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= maximum:
-        raise ValueError(f"{name} 必须是 1 到 {maximum} 的整数")
-    return value
-
-
-def _mobile_source_value(payload: dict[str, object]) -> Literal["agent"] | None:
-    value = payload.get("source")
-    if value is None:
-        return None
-    if value != "agent":
-        raise ValueError("source 只支持 agent")
-    return "agent"
-
-
 def _mobile_range_value(payload: dict[str, object]) -> Literal["24h", "7d"]:
     value = payload.get("range", "24h")
     if not isinstance(value, str) or value not in {"24h", "7d"}:
-        raise ValueError("range 只支持 24h 或 7d")
+        raise MobileUiRpcInvalidRequest("range 只支持 24h 或 7d")
     return cast("Literal['24h', '7d']", value)
 
 
@@ -311,7 +267,7 @@ def _mobile_error_detail(item: dict[str, object]) -> dict[str, object]:
 def _required_mobile_string(payload: dict[str, object], name: str) -> str:
     value = payload.get(name)
     if not isinstance(value, str) or not value or len(value) > 512:
-        raise ValueError(f"{name} 必须是 1 到 512 字符的字符串")
+        raise MobileUiRpcInvalidRequest(f"{name} 必须是 1 到 512 字符的字符串")
     return value
 
 

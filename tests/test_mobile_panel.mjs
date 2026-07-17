@@ -40,7 +40,7 @@ test("turn tail retries until observe writer exposes exact usage", async () => {
   const cleanup = panel.default.slots["turn.after_answer"].mount(host, {
     messageId: "mobile:demo:2",
     sessionId: "mobile:demo",
-    async request() {
+    async query() {
       calls += 1;
       return calls < 3 ? { usage: null } : { usage: { output_tokens: 321 } };
     },
@@ -91,11 +91,15 @@ test("dashboard only colors cache lanes with real data", async () => {
     querySelectorAll() { return []; },
   };
   const cleanup = panel.default.dashboard.mount(host, {
-    async request(method) {
-      if (method === "kvcache.overview") {
+    async query(method) {
+      if (method === "kvcache.bootstrap") {
         return {
-          passive: { tracked_turn_count: 1, hit_rate: 0.8 },
-          proactive: { tracked_turn_count: 0, hit_rate: null },
+          overview: {
+            passive: { tracked_turn_count: 1, hit_rate: 0.8 },
+            proactive: { tracked_turn_count: 0, hit_rate: null },
+          },
+          recent: { items: [], total: 0 },
+          recent_agent: { items: [], total: 0 },
         };
       }
       return { items: [], total: 0 };
@@ -122,8 +126,7 @@ test("health status uses color only for an actionable state", () => {
     title: "2 类错误正在增加",
     description: "共 18 次，先查看爆发项。",
   });
-  assert.equal(panel.default.navigation.label, "Observe");
-  assert.equal(panel.default.navigation.description, "缓存效率与运行健康");
+  assert.equal(panel.default.navigation, undefined);
 });
 
 test("health details stay inside the mobile viewport", () => {

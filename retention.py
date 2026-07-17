@@ -13,7 +13,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from .db import open_db
+from .db import open_db, rebuild_kv_cache_projection
 
 logger = logging.getLogger("observe.retention")
 
@@ -51,11 +51,14 @@ def _run_cleanup(db_path: Path) -> None:
                     f"DELETE FROM {table} WHERE {_retention_ts_col(table)} < {cutoff}{status_clause} AND {_retention_error_clause(table)}"
                 )
                 deleted[table] = cur.rowcount
+            if deleted["turns"] > 0:
+                rebuild_kv_cache_projection(conn)
 
         logger.info("observe retention done: %s", deleted)
         _ = _stamp_path(db_path).write_text("ok")
     except Exception:
         logger.exception("observe retention failed")
+        raise
     finally:
         conn.close()
 
