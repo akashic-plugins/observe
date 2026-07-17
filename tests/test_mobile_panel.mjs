@@ -30,6 +30,7 @@ test("turn tail retries until observe writer exposes exact usage", async () => {
     },
   };
   let calls = 0;
+  const cacheModes = [];
   const host = {
     className: "",
     textContent: "",
@@ -40,15 +41,17 @@ test("turn tail retries until observe writer exposes exact usage", async () => {
   const cleanup = panel.default.slots["turn.after_answer"].mount(host, {
     messageId: "mobile:demo:2",
     sessionId: "mobile:demo",
-    async query() {
+    async query(_method, _payload, options) {
       calls += 1;
-      return calls < 3 ? { usage: null } : { usage: { output_tokens: 321 } };
+      cacheModes.push(options.cache);
+      return calls < 2 ? { usage: null } : { usage: { output_tokens: 321 } };
     },
   });
 
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await new Promise((resolve) => setTimeout(resolve, 400));
 
-  assert.equal(calls, 3);
+  assert.equal(calls, 2);
+  assert.deepEqual(cacheModes, ["immutable", "immutable"]);
   assert.match(host.child.innerHTML, /输出/);
   assert.match(host.child.innerHTML, /321 tokens/);
   assert.doesNotMatch(host.child.innerHTML, /observe-kv-tail__marker/);

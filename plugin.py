@@ -45,7 +45,7 @@ class ObservePlugin(Plugin):
         )
 
     name = "observe"
-    version = "1.1.0"
+    version = "1.2.0"
 
     async def initialize(self) -> None:
         workspace = self.context.workspace
@@ -121,6 +121,7 @@ class ObservePlugin(Plugin):
                 session_key=session_id,
             )
             return {"usage": usage}
+        raise AssertionError(f"未处理的 observe 移动方法: {method}")
 
     def _mobile_health_query(
         self,

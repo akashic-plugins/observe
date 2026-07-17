@@ -31,10 +31,14 @@ function wait(delay) {
 }
 
 async function requestMessageUsage(context, messageId) {
-  const delays = [0, 100, 300, 700];
+  const delays = [0, 250];
   for (const delay of delays) {
     if (delay > 0) await wait(delay);
-    const result = await context.query("kvcache.message_usage", { message_id: messageId });
+    const result = await context.query(
+      "kvcache.message_usage",
+      { message_id: messageId },
+      { cache: "immutable" },
+    );
     if (result.usage) return result;
   }
   return { usage: null };
