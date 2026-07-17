@@ -20,7 +20,10 @@ from agent.lifecycle.phases.after_reasoning import (
     AfterReasoningFrame,
     default_after_reasoning_modules,
 )
-from agent.lifecycle.phases.after_turn import AfterTurnFrame, default_after_turn_modules
+from agent.lifecycle.phases.after_turn import (
+    AfterTurnFrame,
+    default_after_turn_modules,
+)
 from agent.lifecycle.types import AfterReasoningInput, TurnSnapshot, TurnState
 from agent.looping.ports import SessionServices
 from agent.plugins.context import PluginContext, PluginKVStore
