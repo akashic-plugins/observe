@@ -3,7 +3,20 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const source = await readFile(new URL("../mobile_panel.js", import.meta.url), "utf8");
+const styles = await readFile(new URL("../mobile_panel.css", import.meta.url), "utf8");
 const panel = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+
+function contrastRatio(first, second) {
+  const luminance = (hex) => {
+    const channels = hex.match(/[a-f\d]{2}/gi).map((value) => Number.parseInt(value, 16) / 255);
+    const linear = channels.map((value) => value <= 0.04045
+      ? value / 12.92
+      : ((value + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+  };
+  const [lighter, darker] = [luminance(first), luminance(second)].sort((a, b) => b - a);
+  return (lighter + 0.05) / (darker + 0.05);
+}
 
 test("turn tail retries until observe writer exposes exact usage", async () => {
   globalThis.window = { setTimeout };
@@ -111,4 +124,18 @@ test("health status uses color only for an actionable state", () => {
   });
   assert.equal(panel.default.navigation.label, "Observe");
   assert.equal(panel.default.navigation.description, "缓存效率与运行健康");
+});
+
+test("health details stay inside the mobile viewport", () => {
+  assert.match(styles, /\.observe-health-error__detail\s*\{[^}]*max-width:\s*100%/s);
+  assert.match(styles, /\.observe-health-error__detail pre\s*\{[^}]*max-width:\s*100%/s);
+  assert.match(styles, /\.observe-health-error__detail pre\s*\{[^}]*overflow-wrap:\s*anywhere/s);
+  assert.match(source, /aria-controls="observe-panel-health"/);
+  assert.match(source, /event\.key === "ArrowRight"/);
+});
+
+test("urgent health fallback keeps small text at AA contrast", () => {
+  const background = styles.match(/--observe-health-urgent:\s*(#[a-f\d]{6})/i)[1];
+  const foreground = styles.match(/--observe-health-urgent-ink:\s*(#[a-f\d]{6})/i)[1];
+  assert.ok(contrastRatio(background, foreground) >= 4.5);
 });

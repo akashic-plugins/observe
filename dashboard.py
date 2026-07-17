@@ -156,7 +156,7 @@ class ObserveDashboardReader:
     # KPI + 排障台头部：总数、错误种类、新类型、爆发类型、最近时间、整体 spark。
     def get_global_overview(self, range_token: str) -> dict[str, Any]:
         cutoff, _ = _resolve_range(range_token)
-        groups = self._global_groups(cutoff)
+        groups = self._global_groups(cutoff, include_traceback=False)
         total = sum(g["count"] for g in groups)
         last_ts = max((g["last_ts"] for g in groups), default=None)
         spark = _merge_buckets(groups)
@@ -173,7 +173,11 @@ class ObserveDashboardReader:
     # 排障台左栏：按指纹聚合的群组，可按 facet 分组、按 q 过滤。
     def get_global_list(self, range_token: str, *, facet: str, q: str) -> dict[str, Any]:
         cutoff, _ = _resolve_range(range_token)
-        groups = self._global_groups(cutoff, include_ignored=False)
+        groups = self._global_groups(
+            cutoff,
+            include_ignored=False,
+            include_traceback=False,
+        )
         if q:
             needle = q.lower()
             groups = [
@@ -192,6 +196,70 @@ class ObserveDashboardReader:
             "total": sum(g["count"] for g in groups),
             "sections": sections,
         }
+
+    def get_mobile_global_health(
+        self,
+        range_token: str,
+        *,
+        limit: int,
+    ) -> dict[str, Any]:
+        """一次读取并返回手机所需的错误状态与摘要列表。"""
+
+        # 1. 同一快照排除 ignored，避免状态头与可操作列表互相矛盾
+        cutoff, _ = _resolve_range(range_token)
+        groups = self._global_groups(
+            cutoff,
+            include_ignored=False,
+            include_traceback=False,
+        )
+        groups.sort(
+            key=lambda group: (
+                bool(group["is_spiking"]),
+                bool(group["is_new"]),
+                int(group["count"]),
+                str(group["last_ts"]),
+            ),
+            reverse=True,
+        )
+        total = sum(int(group["count"]) for group in groups)
+
+        # 2. 手机先看增长项，只返回有限摘要，不读取 traceback 与现场会话
+        for group in groups:
+            group.pop("_buckets", None)
+        return {
+            "range": range_token,
+            "total": total,
+            "types": len(groups),
+            "new_types": sum(1 for group in groups if group["is_new"]),
+            "spiking_types": sum(1 for group in groups if group["is_spiking"]),
+            "items": groups[:limit],
+        }
+
+    def get_mobile_global_detail(
+        self,
+        fingerprint: str,
+        range_token: str,
+    ) -> dict[str, Any]:
+        """只读取手机展开项需要的错误详情。"""
+
+        cutoff, _ = _resolve_range(range_token)
+        if not self.db_path.exists():
+            return {}
+        where = "fingerprint = ?"
+        params: tuple[Any, ...] = (fingerprint,)
+        if cutoff is not None:
+            where += " AND last_ts >= ?"
+            params += (cutoff,)
+        with self._lock, _connect(self.db_path) as db:
+            rows = db.execute(
+                f"SELECT * FROM global_errors WHERE {where} ORDER BY bucket ASC",
+                params,
+            ).fetchall()
+        if not rows:
+            return {}
+        detail = _aggregate_fingerprint(rows)
+        detail.pop("_buckets", None)
+        return detail
 
     # 排障台右栏详情：完整 message、趋势、变体（同类型其他指纹）、现场 occurrences。
     def get_global_detail(self, fingerprint: str, range_token: str) -> dict[str, Any]:
@@ -239,15 +307,27 @@ class ObserveDashboardReader:
 
     # 取窗口内 global_errors 全部行，按指纹在 Python 侧聚合成群组列表。
     def _global_groups(
-        self, cutoff: str | None, *, include_ignored: bool = True
+        self,
+        cutoff: str | None,
+        *,
+        include_ignored: bool = True,
+        include_traceback: bool = True,
     ) -> list[dict[str, Any]]:
         if not self.db_path.exists():
             return []
         where = "1=1" if cutoff is None else "last_ts >= ?"
         params: tuple[Any, ...] = () if cutoff is None else (cutoff,)
+        traceback_column = "traceback_text" if include_traceback else "'' AS traceback_text"
         with self._lock, _connect(self.db_path) as db:
             rows = db.execute(
-                f"SELECT * FROM global_errors WHERE {where} ORDER BY fingerprint, bucket ASC",
+                f"""
+                SELECT fingerprint, bucket, source, logger_name, error_type,
+                       message, {traceback_column}, level, first_ts, last_ts,
+                       count, session_keys, status
+                FROM global_errors
+                WHERE {where}
+                ORDER BY fingerprint, bucket ASC
+                """,
                 params,
             ).fetchall()
         by_fp: dict[str, list[sqlite3.Row]] = {}

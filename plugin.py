@@ -96,8 +96,7 @@ class ObservePlugin(Plugin):
             "kvcache.overview",
             "kvcache.turns",
             "kvcache.message_usage",
-            "health.overview",
-            "health.errors",
+            "health.snapshot",
             "health.error_detail",
         }:
             raise ValueError(f"未知 observe 移动方法: {method}")
@@ -148,32 +147,29 @@ class ObservePlugin(Plugin):
         # 1. 复用桌面聚合 owner，只在 RPC 边界限制时间范围和载荷体积
         range_token = _mobile_range_value(payload)
         reader = ObserveDashboardReader(workspace)
-        if method == "health.overview":
-            return cast(
-                "dict[str, object]",
-                await asyncio.to_thread(reader.get_global_overview, range_token),
-            )
-        if method == "health.errors":
+        if method == "health.snapshot":
             result = await asyncio.to_thread(
-                reader.get_global_list,
+                reader.get_mobile_global_health,
                 range_token,
-                facet="type",
-                q="",
+                limit=50,
             )
-            sections = cast("list[dict[str, object]]", result["sections"])
-            raw_items = cast("list[dict[str, object]]", sections[0]["items"])
-            items = [_mobile_error_summary(item) for item in raw_items[:50]]
+            raw_items = cast("list[dict[str, object]]", result["items"])
             return {
                 "range": range_token,
-                "items": cast("list[object]", items),
-                "types": len(raw_items),
+                "items": cast(
+                    "list[object]",
+                    [_mobile_error_summary(item) for item in raw_items],
+                ),
+                "types": int(result["types"]),
                 "total": int(result["total"]),
+                "new_types": int(result["new_types"]),
+                "spiking_types": int(result["spiking_types"]),
             }
 
         # 2. 详情按用户展开时再读取，列表不搬运 traceback 和 occurrence
         fingerprint = _required_mobile_string(payload, "fingerprint")
         detail = await asyncio.to_thread(
-            reader.get_global_detail,
+            reader.get_mobile_global_detail,
             fingerprint,
             range_token,
         )
@@ -279,7 +275,7 @@ def _mobile_source_value(payload: dict[str, object]) -> Literal["agent"] | None:
 
 def _mobile_range_value(payload: dict[str, object]) -> Literal["24h", "7d"]:
     value = payload.get("range", "24h")
-    if value not in {"24h", "7d"}:
+    if not isinstance(value, str) or value not in {"24h", "7d"}:
         raise ValueError("range 只支持 24h 或 7d")
     return cast("Literal['24h', '7d']", value)
 
@@ -307,7 +303,6 @@ def _mobile_error_detail(item: dict[str, object]) -> dict[str, object]:
         {
             "first_ts": str(item["first_ts"]),
             "traceback": traceback_text[:4000],
-            "occurrences": cast("list[object]", item.get("occurrences") or [])[:8],
         }
     )
     return result

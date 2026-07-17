@@ -243,18 +243,36 @@ async def test_mobile_health_reuses_global_error_projection(tmp_path: Path) -> N
                     "active",
                 ),
             )
+        conn.execute(
+            """
+            INSERT INTO global_errors(
+                fingerprint, bucket, source, logger_name, error_type,
+                message, traceback_text, level, first_ts, last_ts,
+                count, session_keys, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "fp-high-count",
+                now.isoformat()[:13],
+                "log",
+                "agent.runtime",
+                "LogError",
+                "frequent but stable",
+                "not returned to the mobile list",
+                "ERROR",
+                now.isoformat(),
+                now.isoformat(),
+                20,
+                '[]',
+                "active",
+            ),
+        )
         conn.commit()
     finally:
         conn.close()
 
-    overview = await plugin.mobile_ui_call(
-        "health.overview",
-        {"range": "24h"},
-        session_id=None,
-        turn_id=None,
-    )
-    errors = await plugin.mobile_ui_call(
-        "health.errors",
+    snapshot = await plugin.mobile_ui_call(
+        "health.snapshot",
         {"range": "24h"},
         session_id=None,
         turn_id=None,
@@ -266,23 +284,46 @@ async def test_mobile_health_reuses_global_error_projection(tmp_path: Path) -> N
         turn_id=None,
     )
 
-    assert overview["total"] == 7
-    assert overview["types"] == 1
-    assert overview["spiking_types"] == 1
-    assert errors["types"] == 1
-    item = errors["items"][0]
+    assert snapshot["total"] == 27
+    assert snapshot["types"] == 2
+    assert snapshot["spiking_types"] == 1
+    item = snapshot["items"][0]
+    assert item["fingerprint"] == "fp-mobile-health"
     assert item["error_type"] == "RuntimeError"
     assert "traceback" not in item
     assert detail["error"]["traceback"].startswith("Traceback")
     assert len(detail["error"]["traceback"]) == 4000
+    assert "occurrences" not in detail["error"]
 
-    with pytest.raises(ValueError, match="range 只支持"):
-        await plugin.mobile_ui_call(
-            "health.overview",
-            {"range": "all"},
-            session_id=None,
-            turn_id=None,
-        )
+    conn = db_module.open_db(tmp_path / "observe" / "observe.db")
+    try:
+        conn.execute("UPDATE global_errors SET status = 'ignored'")
+        conn.commit()
+    finally:
+        conn.close()
+    ignored = await plugin.mobile_ui_call(
+        "health.snapshot",
+        {"range": "24h"},
+        session_id=None,
+        turn_id=None,
+    )
+    assert ignored == {
+        "range": "24h",
+        "items": [],
+        "types": 0,
+        "total": 0,
+        "new_types": 0,
+        "spiking_types": 0,
+    }
+
+    for invalid_range in ("all", [], {}, True, None):
+        with pytest.raises(ValueError, match="range 只支持"):
+            await plugin.mobile_ui_call(
+                "health.snapshot",
+                {"range": invalid_range},
+                session_id=None,
+                turn_id=None,
+            )
 
 
 def test_open_db_removes_legacy_unique_turn_id_index(tmp_path: Path) -> None:

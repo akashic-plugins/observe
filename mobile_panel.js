@@ -234,7 +234,9 @@ function healthErrorRow(error, context) {
   return item;
 }
 
-function renderHealth(host, context, summary, page) {
+function renderHealth(host, context, snapshot) {
+  const summary = snapshot;
+  const page = snapshot;
   const state = healthState(summary);
   const hero = host.querySelector(".observe-health-hero");
   hero.dataset.tone = state.tone;
@@ -270,10 +272,10 @@ const dashboard = {
     host.className += " observe-kv";
     host.innerHTML = `
       <div class="observe-view-switch" role="tablist" aria-label="Observe 看板">
-        <button type="button" role="tab" aria-selected="true" data-view="cache">缓存效率</button>
-        <button type="button" role="tab" aria-selected="false" data-view="health">运行健康</button>
+        <button id="observe-tab-cache" type="button" role="tab" aria-controls="observe-panel-cache" aria-selected="true" tabindex="0" data-view="cache">缓存效率</button>
+        <button id="observe-tab-health" type="button" role="tab" aria-controls="observe-panel-health" aria-selected="false" tabindex="-1" data-view="health">运行健康</button>
       </div>
-      <div class="observe-view" role="tabpanel" data-panel="cache">
+      <div id="observe-panel-cache" class="observe-view" role="tabpanel" aria-labelledby="observe-tab-cache" data-panel="cache">
         <div class="observe-kv-loading" role="status">正在读取 KV Cache…</div>
         <div class="observe-kv-content" hidden>
           <section class="observe-kv-overview" aria-label="KV Cache 概览">
@@ -292,7 +294,7 @@ const dashboard = {
           </section>
         </div>
       </div>
-      <div class="observe-view" role="tabpanel" data-panel="health" hidden>
+      <div id="observe-panel-health" class="observe-view" role="tabpanel" aria-labelledby="observe-tab-health" data-panel="health" hidden>
         <div class="observe-health-loading" role="status">正在读取运行状态…</div>
         <div class="observe-health-content" hidden>
           <section class="observe-health-hero" data-tone="steady" aria-label="运行状态">
@@ -313,19 +315,18 @@ const dashboard = {
       </div>`;
     const selectView = (view) => {
       for (const button of host.querySelectorAll(".observe-view-switch button")) {
-        button.setAttribute("aria-selected", String(button.dataset.view === view));
+        const selected = button.dataset.view === view;
+        button.setAttribute("aria-selected", String(selected));
+        button.tabIndex = selected ? 0 : -1;
       }
       for (const panel of host.querySelectorAll(".observe-view")) {
         panel.hidden = panel.dataset.panel !== view;
       }
       if (view !== "health" || healthLoaded) return;
       healthLoaded = true;
-      Promise.all([
-        context.request("health.overview", { range: "24h" }),
-        context.request("health.errors", { range: "24h" }),
-      ]).then(([summary, page]) => {
+      context.request("health.snapshot", { range: "24h" }).then((snapshot) => {
         if (!active) return;
-        renderHealth(host, context, summary, page);
+        renderHealth(host, context, snapshot);
         host.querySelector(".observe-health-loading").remove();
         host.querySelector(".observe-health-content").hidden = false;
       }).catch((error) => {
@@ -338,8 +339,26 @@ const dashboard = {
           : "运行状态读取失败";
       });
     };
-    for (const button of host.querySelectorAll(".observe-view-switch button")) {
+    const viewButtons = [...host.querySelectorAll(".observe-view-switch button")];
+    for (const button of viewButtons) {
       button.addEventListener("click", () => selectView(button.dataset.view));
+      button.addEventListener("keydown", (event) => {
+        const current = viewButtons.indexOf(button);
+        const target = event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? viewButtons.length - 1
+            : event.key === "ArrowRight"
+              ? (current + 1) % viewButtons.length
+              : event.key === "ArrowLeft"
+                ? (current - 1 + viewButtons.length) % viewButtons.length
+                : -1;
+        if (target < 0) return;
+        event.preventDefault();
+        const next = viewButtons[target];
+        selectView(next.dataset.view);
+        next.focus();
+      });
     }
     const loading = host.querySelector(".observe-kv-loading");
     const content = host.querySelector(".observe-kv-content");
