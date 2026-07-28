@@ -28,6 +28,7 @@ class _ObserveWriter(Protocol):
 
 
 class ObservePlugin(Plugin):
+    api_version = 2
     @classmethod
     def dashboard_module(cls) -> str | None:
         return "dashboard.py"
@@ -47,7 +48,7 @@ class ObservePlugin(Plugin):
     name = "observe"
     version = "1.2.0"
 
-    async def initialize(self) -> None:
+    def activate(self) -> None:
         workspace = self.context.workspace
         if workspace is None:
             logger.warning("observe 插件缺少 workspace，跳过加载")

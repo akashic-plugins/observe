@@ -93,7 +93,7 @@ async def _run_mobile_turn_observe_seam(
     event_bus.on(TurnCommitted, committed.append)
     try:
         # 1. 用真实 after-reasoning 持久化生成 assistant message ID
-        await plugin.initialize()
+        plugin.activate()
         session = manager.get_or_create("mobile:observe-seam")
         message = InboundMessage(
             channel="mobile",
@@ -180,7 +180,7 @@ async def _run_mobile_turn_observe_seam(
 
 
 @pytest.mark.asyncio
-async def test_observe_plugin_initialize_and_terminate(tmp_path: Path) -> None:
+async def test_observe_plugin_activate_and_terminate(tmp_path: Path) -> None:
     plugin = ObservePlugin()
     scope = PluginScope("observe")
     plugin.context = PluginContext(
@@ -193,7 +193,7 @@ async def test_observe_plugin_initialize_and_terminate(tmp_path: Path) -> None:
         workspace=tmp_path,
         scope=scope,
     )
-    await plugin.initialize()
+    plugin.activate()
     await asyncio.sleep(0.05)
     await plugin.terminate()
     assert await scope.aclose() == []
