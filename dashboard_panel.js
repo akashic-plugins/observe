@@ -239,7 +239,7 @@ function ErrorDrill({
               {
                 type: "button",
                 onClick: () => setFacet(f.k),
-                className: `rounded-[4px] px-2.5 py-1 font-mono text-[11px] transition-colors ${facet === f.k ? "bg-surface-3 text-fg shadow-[inset_0_0_0_1px_var(--color-border-strong)]" : "text-muted hover:text-fg"}`,
+                className: `rounded-[4px] px-2.5 py-1 font-mono text-[11px] transition-colors ${facet === f.k ? "bg-surface-3 text-fg shadow-[inset_0_0_0_1px_var(--ak-color-border-strong)]" : "text-muted hover:text-fg"}`,
                 children: f.l
               },
               f.k
@@ -396,7 +396,7 @@ function ErrorDetail({
           },
           v.fingerprint
         )) }),
-        /* @__PURE__ */ jsx("pre", { className: "m-0 max-h-[280px] overflow-auto rounded-lg border border-border bg-bg p-4 font-mono text-[11px] leading-relaxed text-[#c4c4cc]", children: activeVariant?.traceback_text || detail.traceback_text })
+        /* @__PURE__ */ jsx("pre", { className: "m-0 max-h-[280px] overflow-auto rounded-lg border border-border bg-bg p-4 font-mono text-[11px] leading-relaxed text-muted", children: activeVariant?.traceback_text || detail.traceback_text })
       ] }),
       tab === "occ" && /* @__PURE__ */ jsxs("div", { className: "flex flex-col gap-2", children: [
         detail.occurrences.length === 0 && /* @__PURE__ */ jsx("div", { className: "text-[12px] text-muted", children: "\u65E0\u53EF\u5173\u8054\u7684 session \u73B0\u573A\u3002" }),
@@ -414,7 +414,7 @@ function ErrorDetail({
             {
               type: "button",
               onClick: () => onGoto(o.session_key),
-              className: "whitespace-nowrap rounded-md border border-accent-deep bg-accent-soft px-2.5 py-1.5 font-mono text-[10.5px] text-[#dfe3ff]",
+              className: "whitespace-nowrap rounded-md border border-accent-deep bg-accent-soft px-2.5 py-1.5 font-mono text-[10.5px] text-accent-ink",
               children: "\u67E5\u770B\u5BF9\u8BDD \u2197"
             }
           )
@@ -428,7 +428,7 @@ function ErrorDetail({
           type: "button",
           onClick: () => detail.occurrences[0] && onGoto(detail.occurrences[0].session_key),
           disabled: detail.occurrences.length === 0,
-          className: "rounded-md border border-accent-deep bg-accent-soft px-3 py-2 font-mono text-[11px] text-[#dfe3ff] transition-all duration-150 hover:brightness-110 active:brightness-95 disabled:opacity-40",
+          className: "rounded-md border border-accent-deep bg-accent-soft px-3 py-2 font-mono text-[11px] text-accent-ink transition-all duration-150 hover:brightness-110 active:brightness-95 disabled:opacity-40",
           children: "\u67E5\u770B\u6700\u8FD1\u5BF9\u8BDD \u2197"
         }
       ),
