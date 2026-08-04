@@ -90,6 +90,7 @@ function ErrorDrill({
   onClose
 }) {
   const drillRef = useRef(null);
+  const closeButtonRef = useRef(null);
   const [overview, setOverview] = useState(null);
   const [facet, setFacet] = useState("type");
   const [q, setQ] = useState("");
@@ -133,6 +134,7 @@ function ErrorDrill({
     const drill = drillRef.current;
     const portal = portalRef.current;
     if (!drill || !portal) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const tr = portal.getBoundingClientRect();
     const cr = drill.getBoundingClientRect();
     drill.style.transition = "none";
@@ -149,6 +151,10 @@ function ErrorDrill({
   const close = useCallback(() => {
     const drill = drillRef.current;
     const portal = portalRef.current;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      onClose();
+      return;
+    }
     if (drill && portal) {
       const tr = portal.getBoundingClientRect();
       const cr = drill.getBoundingClientRect();
@@ -162,8 +168,28 @@ function ErrorDrill({
     }
   }, [onClose, portalRef]);
   useEffect(() => {
+    closeButtonRef.current?.focus();
+    return () => portalRef.current?.focus();
+  }, [portalRef]);
+  useEffect(() => {
     const onKey = (e) => {
       if (e.key === "Escape") close();
+      if (e.key !== "Tab") return;
+      const focusable = Array.from(
+        drillRef.current?.querySelectorAll(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+        ) ?? []
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -179,11 +205,14 @@ function ErrorDrill({
     close();
   };
   return /* @__PURE__ */ jsxs(Fragment, { children: [
-    /* @__PURE__ */ jsx("div", { className: "fixed inset-0 z-30 bg-black/55 backdrop-blur-[2px]", onClick: close }),
+    /* @__PURE__ */ jsx("div", { "aria-hidden": "true", className: "fixed inset-0 z-30 bg-black/55 backdrop-blur-[2px]", onClick: close }),
     /* @__PURE__ */ jsxs(
       "div",
       {
         ref: drillRef,
+        role: "dialog",
+        "aria-modal": "true",
+        "aria-labelledby": "observe-error-dialog-title",
         className: "fixed z-40 flex flex-col overflow-hidden rounded-2xl border border-border-strong bg-surface shadow-lift-md",
         style: {
           width: "min(1180px, 94vw)",
@@ -198,16 +227,18 @@ function ErrorDrill({
             /* @__PURE__ */ jsx(
               "button",
               {
+                ref: closeButtonRef,
                 type: "button",
                 onClick: close,
-                className: "grid h-8 w-8 place-items-center rounded-md border border-border-strong bg-surface-2 text-[18px] text-muted transition-colors hover:text-fg",
+                className: "grid h-10 w-10 place-items-center rounded-md border border-border-strong bg-surface-2 text-[18px] text-muted transition-colors hover:text-fg",
+                "aria-label": "\u5173\u95ED\u9519\u8BEF\u5206\u6790",
                 title: "\u8FD4\u56DE (Esc)",
                 children: "\u2039"
               }
             ),
             /* @__PURE__ */ jsx("span", { className: "font-mono text-[26px] font-semibold tabular-nums text-danger", children: overview?.total ?? "\u2014" }),
             /* @__PURE__ */ jsxs("div", { className: "min-w-0", children: [
-              /* @__PURE__ */ jsxs("div", { className: "text-sm font-semibold", children: [
+              /* @__PURE__ */ jsxs("div", { id: "observe-error-dialog-title", className: "text-sm font-semibold", children: [
                 "\u9519\u8BEF \xB7 ",
                 RANGES.find((r) => r.key === range)?.label ?? range
               ] }),
@@ -249,6 +280,7 @@ function ErrorDrill({
               {
                 value: q,
                 onChange: (e) => setQ(e.target.value),
+                "aria-label": "\u641C\u7D22\u9519\u8BEF",
                 placeholder: "\u6309\u6D88\u606F / \u6A21\u5757\u8FC7\u6EE4\u2026",
                 className: "w-[280px] rounded-md border border-border bg-bg px-3 py-1.5 font-mono text-[11.5px] text-fg outline-none focus:border-accent-deep"
               }
@@ -294,7 +326,7 @@ function ErrorRow({ g, active, onClick }) {
     {
       type: "button",
       onClick,
-      className: `grid w-full grid-cols-[9px_1fr_auto] items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-all duration-150 ${active ? "border-border-strong bg-accent-soft" : "border-transparent hover:border-border hover:bg-surface-2"}`,
+      className: `grid w-full grid-cols-[9px_1fr_auto] items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-[background-color,border-color] duration-150 ${active ? "border-border-strong bg-accent-soft" : "border-transparent hover:border-border hover:bg-surface-2"}`,
       children: [
         /* @__PURE__ */ jsxs("span", { className: "relative flex h-2 w-2", children: [
           g.is_spiking && /* @__PURE__ */ jsx("span", { className: `absolute inline-flex h-full w-full rounded-full ${TONE_BG[tone]} opacity-60 animate-ping` }),
@@ -428,7 +460,7 @@ function ErrorDetail({
           type: "button",
           onClick: () => detail.occurrences[0] && onGoto(detail.occurrences[0].session_key),
           disabled: detail.occurrences.length === 0,
-          className: "rounded-md border border-accent-deep bg-accent-soft px-3 py-2 font-mono text-[11px] text-accent-ink transition-all duration-150 hover:brightness-110 active:brightness-95 disabled:opacity-40",
+          className: "rounded-md border border-accent-deep bg-accent-soft px-3 py-2 font-mono text-[11px] text-accent-ink transition-[background-color,border-color,filter] duration-150 hover:brightness-110 active:brightness-95 disabled:opacity-40",
           children: "\u67E5\u770B\u6700\u8FD1\u5BF9\u8BDD \u2197"
         }
       ),
@@ -555,8 +587,10 @@ function ObserveMain(_props) {
               /* @__PURE__ */ jsx(
                 "button",
                 {
+                  type: "button",
                   onClick: () => void load(),
-                  className: `grid h-7 w-7 place-items-center rounded-md border border-border bg-surface-2 text-muted transition-colors hover:border-border-strong hover:text-fg ${refreshing ? "animate-spin" : ""}`,
+                  className: `grid h-10 w-10 place-items-center rounded-md border border-border bg-surface-2 text-muted transition-colors hover:border-border-strong hover:text-fg ${refreshing ? "animate-spin" : ""}`,
+                  "aria-label": "\u5237\u65B0\u76D1\u6D4B\u6570\u636E",
                   title: "\u5237\u65B0",
                   children: "\u21BB"
                 }
@@ -564,8 +598,10 @@ function ObserveMain(_props) {
               /* @__PURE__ */ jsx("div", { className: "flex gap-1 rounded-md border border-border bg-surface-2 p-1", children: RANGES.map((r) => /* @__PURE__ */ jsx(
                 "button",
                 {
+                  type: "button",
                   onClick: () => setRange(r.key),
-                  className: `rounded-[4px] px-2.5 py-1 font-mono text-[11px] transition-all duration-150 active:brightness-95 ${range === r.key ? "bg-accent text-accent-ink hover:brightness-110" : "text-muted hover:bg-surface-3 hover:text-fg"}`,
+                  className: `min-h-10 rounded-[4px] px-2.5 py-1 font-mono text-[11px] transition-[background-color,color,filter] duration-150 active:brightness-95 ${range === r.key ? "bg-accent text-accent-ink hover:brightness-110" : "text-muted hover:bg-surface-3 hover:text-fg"}`,
+                  "aria-pressed": range === r.key,
                   children: r.label
                 },
                 r.key
@@ -575,12 +611,14 @@ function ObserveMain(_props) {
           /* @__PURE__ */ jsxs(Grid, { columns: 4, children: [
             /* @__PURE__ */ jsx("div", { className: "animate-fade-up", style: { animationDelay: "0ms" }, children: /* @__PURE__ */ jsx(MetricTile, { label: "\u5BF9\u8BDD\u8F6E\u6570", value: _compact(overview.turns), delta: _delta(turnSeries), sub: overview.last_ts ? `\u6700\u8FD1 ${_shortTs(overview.last_ts)}` : "\u65E0\u8BB0\u5F55", tone: "accent", spark: turnSeries }) }),
             /* @__PURE__ */ jsxs(
-              "div",
+              "button",
               {
+                type: "button",
                 ref: portalRef,
                 onClick: () => setDrillOpen(true),
-                className: "group relative animate-fade-up cursor-pointer rounded-2xl transition-transform duration-200 hover:-translate-y-0.5",
+                className: "group relative animate-fade-up cursor-pointer rounded-2xl border-0 bg-transparent p-0 text-left transition-transform duration-200 hover:-translate-y-0.5",
                 style: { animationDelay: "60ms" },
+                "aria-label": `\u6253\u5F00\u9519\u8BEF\u5206\u6790\uFF0C\u5171 ${gErrTotal} \u6761\u9519\u8BEF`,
                 children: [
                   gErrTotal > 0 && /* @__PURE__ */ jsxs("span", { className: "absolute left-[68px] top-[18px] z-10 flex h-2 w-2", children: [
                     (gErr?.spiking_types ?? 0) > 0 && /* @__PURE__ */ jsx("span", { className: "absolute inline-flex h-full w-full rounded-full bg-danger opacity-60 animate-ping" }),

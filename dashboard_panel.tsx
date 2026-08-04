@@ -217,11 +217,12 @@ function ErrorDrill({
   range,
   onClose,
 }: {
-  portalRef: React.RefObject<HTMLDivElement | null>;
+  portalRef: React.RefObject<HTMLButtonElement | null>;
   range: string;
   onClose: () => void;
 }): ReactElement {
   const drillRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [overview, setOverview] = useState<GErrOverview | null>(null);
   const [facet, setFacet] = useState<string>("type");
   const [q, setQ] = useState<string>("");
@@ -270,6 +271,7 @@ function ErrorDrill({
     const drill = drillRef.current;
     const portal = portalRef.current;
     if (!drill || !portal) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const tr = portal.getBoundingClientRect();
     const cr = drill.getBoundingClientRect();
     drill.style.transition = "none";
@@ -287,6 +289,10 @@ function ErrorDrill({
   const close = useCallback(() => {
     const drill = drillRef.current;
     const portal = portalRef.current;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      onClose();
+      return;
+    }
     if (drill && portal) {
       const tr = portal.getBoundingClientRect();
       const cr = drill.getBoundingClientRect();
@@ -301,8 +307,29 @@ function ErrorDrill({
   }, [onClose, portalRef]);
 
   useEffect(() => {
+    closeButtonRef.current?.focus();
+    return () => portalRef.current?.focus();
+  }, [portalRef]);
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === "Escape") close();
+      if (e.key !== "Tab") return;
+      const focusable = Array.from(
+        drillRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -322,9 +349,12 @@ function ErrorDrill({
 
   return (
     <>
-      <div className="fixed inset-0 z-30 bg-black/55 backdrop-blur-[2px]" onClick={close} />
+      <div aria-hidden="true" className="fixed inset-0 z-30 bg-black/55 backdrop-blur-[2px]" onClick={close} />
       <div
         ref={drillRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="observe-error-dialog-title"
         className="fixed z-40 flex flex-col overflow-hidden rounded-2xl border border-border-strong bg-surface shadow-lift-md"
         style={{
           width: "min(1180px, 94vw)",
@@ -338,16 +368,18 @@ function ErrorDrill({
         {/* 头部：402 大数字 + 摘要徽标 + range */}
         <div className="flex flex-shrink-0 items-center gap-4 border-b border-border px-5 py-4">
           <button
+            ref={closeButtonRef}
             type="button"
             onClick={close}
-            className="grid h-8 w-8 place-items-center rounded-md border border-border-strong bg-surface-2 text-[18px] text-muted transition-colors hover:text-fg"
+            className="grid h-10 w-10 place-items-center rounded-md border border-border-strong bg-surface-2 text-[18px] text-muted transition-colors hover:text-fg"
+            aria-label="关闭错误分析"
             title="返回 (Esc)"
           >
             ‹
           </button>
           <span className="font-mono text-[26px] font-semibold tabular-nums text-danger">{overview?.total ?? "—"}</span>
           <div className="min-w-0">
-            <div className="text-sm font-semibold">错误 · {RANGES.find((r) => r.key === range)?.label ?? range}</div>
+            <div id="observe-error-dialog-title" className="text-sm font-semibold">错误 · {RANGES.find((r) => r.key === range)?.label ?? range}</div>
             <div className="mt-0.5 flex items-center gap-3 font-mono text-[11px] text-muted">
               <span>{overview?.types ?? 0} 个类型</span>
               {(overview?.new_types ?? 0) > 0 && <span className="rounded border border-accent-deep bg-accent-soft px-1.5 py-0.5 text-accent">🆕 {overview?.new_types} 新类型</span>}
@@ -377,6 +409,7 @@ function ErrorDrill({
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
+            aria-label="搜索错误"
             placeholder="按消息 / 模块过滤…"
             className="w-[280px] rounded-md border border-border bg-bg px-3 py-1.5 font-mono text-[11.5px] text-fg outline-none focus:border-accent-deep"
           />
@@ -427,7 +460,7 @@ function ErrorRow({ g, active, onClick }: { g: GErrGroup; active: boolean; onCli
     <button
       type="button"
       onClick={onClick}
-      className={`grid w-full grid-cols-[9px_1fr_auto] items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-all duration-150 ${active ? "border-border-strong bg-accent-soft" : "border-transparent hover:border-border hover:bg-surface-2"}`}
+      className={`grid w-full grid-cols-[9px_1fr_auto] items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-[background-color,border-color] duration-150 ${active ? "border-border-strong bg-accent-soft" : "border-transparent hover:border-border hover:bg-surface-2"}`}
     >
       <span className="relative flex h-2 w-2">
         {g.is_spiking && <span className={`absolute inline-flex h-full w-full rounded-full ${TONE_BG[tone]} opacity-60 animate-ping`} />}
@@ -565,7 +598,7 @@ function ErrorDetail({
           type="button"
           onClick={() => detail.occurrences[0] && onGoto(detail.occurrences[0].session_key)}
           disabled={detail.occurrences.length === 0}
-          className="rounded-md border border-accent-deep bg-accent-soft px-3 py-2 font-mono text-[11px] text-accent-ink transition-all duration-150 hover:brightness-110 active:brightness-95 disabled:opacity-40"
+          className="rounded-md border border-accent-deep bg-accent-soft px-3 py-2 font-mono text-[11px] text-accent-ink transition-[background-color,border-color,filter] duration-150 hover:brightness-110 active:brightness-95 disabled:opacity-40"
         >
           查看最近对话 ↗
         </button>
@@ -650,7 +683,7 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
   const [updatedAt, setUpdatedAt] = useState<number>(0);
   const [nowTs, setNowTs] = useState<number>(() => Date.now());
   const [refreshing, setRefreshing] = useState<boolean>(false);
-  const portalRef = useRef<HTMLDivElement>(null);
+  const portalRef = useRef<HTMLButtonElement>(null);
 
   const load = useCallback(async () => {
     setRefreshing(true);
@@ -721,8 +754,10 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
           </div>
           <div className="flex items-center gap-2">
             <button
+              type="button"
               onClick={() => void load()}
-              className={`grid h-7 w-7 place-items-center rounded-md border border-border bg-surface-2 text-muted transition-colors hover:border-border-strong hover:text-fg ${refreshing ? "animate-spin" : ""}`}
+              className={`grid h-10 w-10 place-items-center rounded-md border border-border bg-surface-2 text-muted transition-colors hover:border-border-strong hover:text-fg ${refreshing ? "animate-spin" : ""}`}
+              aria-label="刷新监测数据"
               title="刷新"
             >
               ↻
@@ -731,8 +766,10 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
               {RANGES.map((r) => (
                 <button
                   key={r.key}
+                  type="button"
                   onClick={() => setRange(r.key)}
-                  className={`rounded-[4px] px-2.5 py-1 font-mono text-[11px] transition-all duration-150 active:brightness-95 ${range === r.key ? "bg-accent text-accent-ink hover:brightness-110" : "text-muted hover:bg-surface-3 hover:text-fg"}`}
+                  className={`min-h-10 rounded-[4px] px-2.5 py-1 font-mono text-[11px] transition-[background-color,color,filter] duration-150 active:brightness-95 ${range === r.key ? "bg-accent text-accent-ink hover:brightness-110" : "text-muted hover:bg-surface-3 hover:text-fg"}`}
+                  aria-pressed={range === r.key}
                 >
                   {r.label}
                 </button>
@@ -747,11 +784,13 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
             <MetricTile label="对话轮数" value={_compact(overview.turns)} delta={_delta(turnSeries)} sub={overview.last_ts ? `最近 ${_shortTs(overview.last_ts)}` : "无记录"} tone="accent" spark={turnSeries} />
           </div>
           {/* 错误卡 = 传送门：点击 FLIP 放大成排障台 */}
-          <div
+          <button
+            type="button"
             ref={portalRef}
             onClick={() => setDrillOpen(true)}
-            className="group relative animate-fade-up cursor-pointer rounded-2xl transition-transform duration-200 hover:-translate-y-0.5"
+            className="group relative animate-fade-up cursor-pointer rounded-2xl border-0 bg-transparent p-0 text-left transition-transform duration-200 hover:-translate-y-0.5"
             style={{ animationDelay: "60ms" }}
+            aria-label={`打开错误分析，共 ${gErrTotal} 条错误`}
           >
             {gErrTotal > 0 && (
               <span className="absolute left-[68px] top-[18px] z-10 flex h-2 w-2">
@@ -761,7 +800,7 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
             )}
             <span className="pointer-events-none absolute right-4 top-4 z-10 font-mono text-[10px] text-danger opacity-0 transition-opacity group-hover:opacity-100">展开分析 →</span>
             <MetricTile label="错误" value={_compact(gErrTotal)} sub={`${gErr?.types ?? 0} 类型 · 点击展开`} tone="danger" spark={gErrSpark} />
-          </div>
+          </button>
           <div className="animate-fade-up" style={{ animationDelay: "120ms" }}>
             <MetricTile label="被动 KV 命中率" value={_pct(overview.passive_cache_hit_rate)} sub={`主动 ${_pct(overview.proactive_cache_hit_rate)}`} tone="success" spark={passiveHitSeries} />
           </div>
