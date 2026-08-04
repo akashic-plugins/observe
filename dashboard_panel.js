@@ -1,4 +1,4 @@
-// dashboard_panel.tsx
+// ../observe/dashboard_panel.tsx
 import {
   useCallback,
   useEffect,
@@ -483,6 +483,7 @@ function ObserveMain(_props) {
   const [nowTs, setNowTs] = useState(() => Date.now());
   const [refreshing, setRefreshing] = useState(false);
   const portalRef = useRef(null);
+  const overviewRef = useRef(null);
   const load = useCallback(async () => {
     setRefreshing(true);
     try {
@@ -508,6 +509,9 @@ function ObserveMain(_props) {
     const id = window.setInterval(() => setNowTs(Date.now()), 1e3);
     return () => window.clearInterval(id);
   }, []);
+  useEffect(() => {
+    if (overviewRef.current) overviewRef.current.inert = drillOpen;
+  }, [drillOpen]);
   if (!overview) {
     return /* @__PURE__ */ jsx(ObserveSkeleton, {});
   }
@@ -519,12 +523,13 @@ function ObserveMain(_props) {
   const iterSeries = points.map((p) => p.avg_iteration ?? 0);
   const labelled = (vals) => points.map((p, i) => ({ label: _bucketLabel(p.bucket), value: vals[i] }));
   const gErrTotal = gErr?.total ?? overview.errors;
-  const gErrSpark = gErr && gErr.spark.length > 1 ? gErr.spark : errorSeries;
   return /* @__PURE__ */ jsxs(Fragment, { children: [
     /* @__PURE__ */ jsxs(
       "div",
       {
-        className: "flex flex-col gap-4 p-6 transition-opacity duration-150",
+        ref: overviewRef,
+        "aria-hidden": drillOpen || void 0,
+        className: "flex flex-col gap-5 p-6 transition-opacity duration-150",
         style: drillOpen ? { opacity: 0.35, pointerEvents: "none" } : void 0,
         children: [
           /* @__PURE__ */ jsxs("div", { className: "flex items-end justify-between", children: [
@@ -566,31 +571,45 @@ function ObserveMain(_props) {
               )) })
             ] })
           ] }),
-          /* @__PURE__ */ jsxs(Grid, { columns: 4, children: [
+          /* @__PURE__ */ jsxs(
+            "section",
+            {
+              className: `flex min-h-16 items-center justify-between gap-4 border px-4 py-3 ${gErrTotal > 0 ? "border-danger/40 bg-danger/10" : "border-success/35 bg-success/10"}`,
+              "aria-label": "\u8FD0\u884C\u72B6\u6001",
+              children: [
+                /* @__PURE__ */ jsxs("div", { className: "min-w-0", children: [
+                  /* @__PURE__ */ jsx("div", { className: `text-[13px] font-semibold ${gErrTotal > 0 ? "text-danger" : "text-success"}`, children: gErrTotal > 0 ? `${gErrTotal} \u6761\u9519\u8BEF\u9700\u8981\u67E5\u770B` : "\u5F53\u524D\u533A\u95F4\u6CA1\u6709\u91C7\u96C6\u5230\u9519\u8BEF" }),
+                  /* @__PURE__ */ jsx("p", { className: "mt-1 text-[11.5px] text-muted", children: gErrTotal > 0 ? `${gErr?.types ?? 0} \u4E2A\u9519\u8BEF\u7C7B\u578B\uFF0C\u5148\u67E5\u770B\u7206\u53D1\u548C\u65B0\u51FA\u73B0\u7684\u7C7B\u578B\u3002` : "\u4E3B\u5FAA\u73AF\u9065\u6D4B\u6301\u7EED\u66F4\u65B0\uFF0C\u7F13\u5B58\u4E0E\u8FED\u4EE3\u6307\u6807\u89C1\u4E0B\u65B9\u3002" })
+                ] }),
+                gErrTotal > 0 && /* @__PURE__ */ jsx(
+                  "button",
+                  {
+                    type: "button",
+                    ref: portalRef,
+                    onClick: () => setDrillOpen(true),
+                    className: "min-h-10 flex-shrink-0 rounded-md border border-danger/40 bg-surface px-3 text-[12px] font-semibold text-danger hover:bg-danger/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+                    children: "\u67E5\u770B\u9519\u8BEF\u5206\u6790"
+                  }
+                )
+              ]
+            }
+          ),
+          /* @__PURE__ */ jsxs(Grid, { columns: 3, children: [
             /* @__PURE__ */ jsx("div", { children: /* @__PURE__ */ jsx(MetricTile, { label: "\u5BF9\u8BDD\u8F6E\u6570", value: _compact(overview.turns), delta: _delta(turnSeries), sub: overview.last_ts ? `\u6700\u8FD1 ${_shortTs(overview.last_ts)}` : "\u65E0\u8BB0\u5F55", tone: "accent", spark: turnSeries }) }),
-            /* @__PURE__ */ jsxs(
-              "button",
-              {
-                type: "button",
-                ref: portalRef,
-                onClick: () => setDrillOpen(true),
-                className: "group relative cursor-pointer border-0 bg-transparent p-0 text-left",
-                "aria-label": `\u6253\u5F00\u9519\u8BEF\u5206\u6790\uFF0C\u5171 ${gErrTotal} \u6761\u9519\u8BEF`,
-                children: [
-                  /* @__PURE__ */ jsx("span", { className: "pointer-events-none absolute right-4 top-4 z-10 text-[10px] font-medium text-danger", children: "\u67E5\u770B\u5206\u6790" }),
-                  /* @__PURE__ */ jsx(MetricTile, { label: "\u9519\u8BEF", value: _compact(gErrTotal), sub: `${gErr?.types ?? 0} \u7C7B\u578B \xB7 \u70B9\u51FB\u5C55\u5F00`, tone: "danger", spark: gErrSpark })
-                ]
-              }
-            ),
             /* @__PURE__ */ jsx("div", { children: /* @__PURE__ */ jsx(MetricTile, { label: "\u88AB\u52A8 KV \u547D\u4E2D\u7387", value: _pct(overview.passive_cache_hit_rate), sub: `\u4E3B\u52A8 ${_pct(overview.proactive_cache_hit_rate)}`, tone: "success", spark: passiveHitSeries }) }),
             /* @__PURE__ */ jsx("div", { children: /* @__PURE__ */ jsx(MetricTile, { label: "\u5E73\u5747\u8FED\u4EE3", value: overview.avg_iteration != null ? overview.avg_iteration.toFixed(1) : "\u2014", unit: `\u5CF0 ${overview.max_iteration}`, sub: "\u6BCF\u8F6E LLM \u8C03\u7528\u6B21\u6570", tone: "warning", spark: iterSeries }) })
           ] }),
           /* @__PURE__ */ jsxs(Grid, { columns: 2, children: [
             /* @__PURE__ */ jsx(Card, { title: "\u8F93\u5165 Token \u8D8B\u52BF", children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(tokenSeries), kind: "area", tone: "accent", valueFmt: _compact }) }),
-            /* @__PURE__ */ jsx(Card, { title: "\u5E73\u5747\u8FED\u4EE3\u8D8B\u52BF", children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(iterSeries), kind: "area", tone: "warning", valueFmt: (n) => n.toFixed(1) }) }),
-            /* @__PURE__ */ jsx(Card, { title: "\u5168\u5C40\u88AB\u52A8\u94FE\u8DEF\u547D\u4E2D\u7387\u8D8B\u52BF", children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(passiveHitSeries), kind: "area", tone: "success", valueFmt: (n) => `${n.toFixed(0)}%` }) }),
-            /* @__PURE__ */ jsx(Card, { title: "\u5168\u5C40\u4E3B\u52A8\u94FE\u8DEF\u547D\u4E2D\u7387\u8D8B\u52BF", children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(proactiveHitSeries), kind: "area", tone: "accent", valueFmt: (n) => `${n.toFixed(0)}%` }) }),
-            /* @__PURE__ */ jsx(Card, { title: "\u9519\u8BEF\u8D8B\u52BF", children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(errorSeries), kind: "bar", tone: "danger", valueFmt: (n) => String(n), empty: "\u6240\u9009\u533A\u95F4\u5185\u6CA1\u6709\u9519\u8BEF" }) })
+            /* @__PURE__ */ jsx(Card, { title: "\u5E73\u5747\u8FED\u4EE3\u8D8B\u52BF", children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(iterSeries), kind: "area", tone: "warning", valueFmt: (n) => n.toFixed(1) }) })
+          ] }),
+          /* @__PURE__ */ jsxs("details", { className: "border-t border-border pt-1", children: [
+            /* @__PURE__ */ jsx("summary", { className: "min-h-11 cursor-pointer py-3 text-[12px] font-semibold text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent", children: "\u67E5\u770B\u7F13\u5B58\u547D\u4E2D\u4E0E\u9519\u8BEF\u8D8B\u52BF" }),
+            /* @__PURE__ */ jsxs(Grid, { columns: 2, children: [
+              /* @__PURE__ */ jsx(Card, { title: "\u5168\u5C40\u88AB\u52A8\u94FE\u8DEF\u547D\u4E2D\u7387\u8D8B\u52BF", children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(passiveHitSeries), kind: "area", tone: "success", valueFmt: (n) => `${n.toFixed(0)}%` }) }),
+              /* @__PURE__ */ jsx(Card, { title: "\u5168\u5C40\u4E3B\u52A8\u94FE\u8DEF\u547D\u4E2D\u7387\u8D8B\u52BF", children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(proactiveHitSeries), kind: "area", tone: "accent", valueFmt: (n) => `${n.toFixed(0)}%` }) }),
+              /* @__PURE__ */ jsx(Card, { title: "\u9519\u8BEF\u8D8B\u52BF", children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(errorSeries), kind: "bar", tone: "danger", valueFmt: (n) => String(n), empty: "\u6240\u9009\u533A\u95F4\u5185\u6CA1\u6709\u9519\u8BEF" }) })
+            ] })
           ] })
         ]
       }
@@ -600,8 +619,8 @@ function ObserveMain(_props) {
 }
 window.AkashicDashboard.registerPlugin({
   id: "observe",
-  label: "Observe \u76D1\u6D4B",
-  viewLabel: "\u76D1\u6D4B",
+  label: "\u8FD0\u884C\u76D1\u6D4B",
+  viewLabel: "\u8FD0\u884C\u76D1\u6D4B",
   layout: "workbench",
   pageSize: 30,
   rowKey: "id",

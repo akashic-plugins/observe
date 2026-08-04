@@ -643,6 +643,7 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
   const [nowTs, setNowTs] = useState<number>(() => Date.now());
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const portalRef = useRef<HTMLButtonElement>(null);
+  const overviewRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     setRefreshing(true);
@@ -674,6 +675,10 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
     return () => window.clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    if (overviewRef.current) overviewRef.current.inert = drillOpen;
+  }, [drillOpen]);
+
   if (!overview) {
     return <ObserveSkeleton />;
   }
@@ -688,12 +693,12 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
 
   // 全局错误总数（采集到的、跨子系统）优先用于「错误」卡，与排障台数字一致。
   const gErrTotal = gErr?.total ?? overview.errors;
-  const gErrSpark = gErr && gErr.spark.length > 1 ? gErr.spark : errorSeries;
-
   return (
     <>
       <div
-        className="flex flex-col gap-4 p-6 transition-opacity duration-150"
+        ref={overviewRef}
+        aria-hidden={drillOpen || undefined}
+        className="flex flex-col gap-5 p-6 transition-opacity duration-150"
         style={drillOpen ? { opacity: 0.35, pointerEvents: "none" } : undefined}
       >
         {/* header + range switcher */}
@@ -734,22 +739,35 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
           </div>
         </div>
 
-        {/* KPI tiles */}
-        <Grid columns={4}>
+        <section
+          className={`flex min-h-16 items-center justify-between gap-4 border px-4 py-3 ${gErrTotal > 0 ? "border-danger/40 bg-danger/10" : "border-success/35 bg-success/10"}`}
+          aria-label="运行状态"
+        >
+          <div className="min-w-0">
+            <div className={`text-[13px] font-semibold ${gErrTotal > 0 ? "text-danger" : "text-success"}`}>
+              {gErrTotal > 0 ? `${gErrTotal} 条错误需要查看` : "当前区间没有采集到错误"}
+            </div>
+            <p className="mt-1 text-[11.5px] text-muted">
+              {gErrTotal > 0 ? `${gErr?.types ?? 0} 个错误类型，先查看爆发和新出现的类型。` : "主循环遥测持续更新，缓存与迭代指标见下方。"}
+            </p>
+          </div>
+          {gErrTotal > 0 && (
+            <button
+              type="button"
+              ref={portalRef}
+              onClick={() => setDrillOpen(true)}
+              className="min-h-10 flex-shrink-0 rounded-md border border-danger/40 bg-surface px-3 text-[12px] font-semibold text-danger hover:bg-danger/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              查看错误分析
+            </button>
+          )}
+        </section>
+
+        {/* 关键运行指标 */}
+        <Grid columns={3}>
           <div>
             <MetricTile label="对话轮数" value={_compact(overview.turns)} delta={_delta(turnSeries)} sub={overview.last_ts ? `最近 ${_shortTs(overview.last_ts)}` : "无记录"} tone="accent" spark={turnSeries} />
           </div>
-          {/* 错误卡 = 传送门：点击 FLIP 放大成排障台 */}
-          <button
-            type="button"
-            ref={portalRef}
-            onClick={() => setDrillOpen(true)}
-            className="group relative cursor-pointer border-0 bg-transparent p-0 text-left"
-            aria-label={`打开错误分析，共 ${gErrTotal} 条错误`}
-          >
-            <span className="pointer-events-none absolute right-4 top-4 z-10 text-[10px] font-medium text-danger">查看分析</span>
-            <MetricTile label="错误" value={_compact(gErrTotal)} sub={`${gErr?.types ?? 0} 类型 · 点击展开`} tone="danger" spark={gErrSpark} />
-          </button>
           <div>
             <MetricTile label="被动 KV 命中率" value={_pct(overview.passive_cache_hit_rate)} sub={`主动 ${_pct(overview.proactive_cache_hit_rate)}`} tone="success" spark={passiveHitSeries} />
           </div>
@@ -758,7 +776,7 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
           </div>
         </Grid>
 
-        {/* trend charts */}
+        {/* 首要趋势 */}
         <Grid columns={2}>
           <Card title="输入 Token 趋势">
             <TrendChart data={labelled(tokenSeries)} kind="area" tone="accent" valueFmt={_compact} />
@@ -766,16 +784,24 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
           <Card title="平均迭代趋势">
             <TrendChart data={labelled(iterSeries)} kind="area" tone="warning" valueFmt={(n) => n.toFixed(1)} />
           </Card>
-          <Card title="全局被动链路命中率趋势">
-            <TrendChart data={labelled(passiveHitSeries)} kind="area" tone="success" valueFmt={(n) => `${n.toFixed(0)}%`} />
-          </Card>
-          <Card title="全局主动链路命中率趋势">
-            <TrendChart data={labelled(proactiveHitSeries)} kind="area" tone="accent" valueFmt={(n) => `${n.toFixed(0)}%`} />
-          </Card>
-          <Card title="错误趋势">
-            <TrendChart data={labelled(errorSeries)} kind="bar" tone="danger" valueFmt={(n) => String(n)} empty="所选区间内没有错误" />
-          </Card>
         </Grid>
+
+        <details className="border-t border-border pt-1">
+          <summary className="min-h-11 cursor-pointer py-3 text-[12px] font-semibold text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+            查看缓存命中与错误趋势
+          </summary>
+          <Grid columns={2}>
+            <Card title="全局被动链路命中率趋势">
+              <TrendChart data={labelled(passiveHitSeries)} kind="area" tone="success" valueFmt={(n) => `${n.toFixed(0)}%`} />
+            </Card>
+            <Card title="全局主动链路命中率趋势">
+              <TrendChart data={labelled(proactiveHitSeries)} kind="area" tone="accent" valueFmt={(n) => `${n.toFixed(0)}%`} />
+            </Card>
+            <Card title="错误趋势">
+              <TrendChart data={labelled(errorSeries)} kind="bar" tone="danger" valueFmt={(n) => String(n)} empty="所选区间内没有错误" />
+            </Card>
+          </Grid>
+        </details>
       </div>
 
       {drillOpen && <ErrorDrill portalRef={portalRef} range={range} onClose={() => setDrillOpen(false)} />}
@@ -785,8 +811,8 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
 
 window.AkashicDashboard.registerPlugin({
   id: "observe",
-  label: "Observe 监测",
-  viewLabel: "监测",
+  label: "运行监测",
+  viewLabel: "运行监测",
   layout: "workbench",
   pageSize: 30,
   rowKey: "id",
