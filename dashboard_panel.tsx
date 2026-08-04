@@ -130,9 +130,9 @@ const SOURCE_LABEL: Record<string, string> = {
 };
 
 const STATUS_META: Record<string, { label: string; tone: ChartTone }> = {
-  active: { label: "● 活跃", tone: "warning" },
-  acknowledged: { label: "◌ 已确认", tone: "muted" },
-  ignored: { label: "✓ 已忽略", tone: "success" },
+  active: { label: "活跃", tone: "warning" },
+  acknowledged: { label: "已确认", tone: "muted" },
+  ignored: { label: "已忽略", tone: "success" },
 };
 
 const TONE_BG: Record<ChartTone, string> = {
@@ -194,16 +194,14 @@ function _severity(count: number, spiking: boolean): ChartTone {
   return "muted";
 }
 
-// A monitoring widget card with a hairline header — mirrors the superlog widget
-// chrome (uppercase mono title, bottom-bordered header, padded body).
 function Card({ title, children, bodyClass, style }: { title: string; children: ReactNode; bodyClass?: string; style?: React.CSSProperties }): ReactElement {
   return (
     <div
-      className="flex animate-fade-up flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-lift-sm transition-[box-shadow,border-color] duration-200 hover:border-border-strong hover:shadow-lift-md"
+      className="flex flex-col overflow-hidden border border-border bg-surface"
       style={style}
     >
       <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
-        <h3 className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted">{title}</h3>
+        <h3 className="text-[12px] font-medium text-muted">{title}</h3>
       </div>
       <div className={bodyClass ?? "p-4"}>{children}</div>
     </div>
@@ -266,45 +264,9 @@ function ErrorDrill({
     };
   }, [selFp, range]);
 
-  // FLIP：从传送门卡的位置/尺寸长大到中央。
-  useEffect(() => {
-    const drill = drillRef.current;
-    const portal = portalRef.current;
-    if (!drill || !portal) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const tr = portal.getBoundingClientRect();
-    const cr = drill.getBoundingClientRect();
-    drill.style.transition = "none";
-    drill.style.transformOrigin = "top left";
-    drill.style.transform = `translate(${tr.left - cr.left}px, ${tr.top - cr.top}px) scale(${tr.width / cr.width}, ${tr.height / cr.height})`;
-    drill.style.opacity = "0";
-    void drill.getBoundingClientRect();
-    requestAnimationFrame(() => {
-      drill.style.transition = "transform .44s cubic-bezier(.2,.85,.25,1), opacity .26s ease";
-      drill.style.transform = "";
-      drill.style.opacity = "";
-    });
-  }, [portalRef]);
-
   const close = useCallback(() => {
-    const drill = drillRef.current;
-    const portal = portalRef.current;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      onClose();
-      return;
-    }
-    if (drill && portal) {
-      const tr = portal.getBoundingClientRect();
-      const cr = drill.getBoundingClientRect();
-      drill.style.transition = "transform .4s cubic-bezier(.4,0,.6,1), opacity .3s ease";
-      drill.style.transformOrigin = "top left";
-      drill.style.transform = `translate(${tr.left - cr.left}px, ${tr.top - cr.top}px) scale(${tr.width / cr.width}, ${tr.height / cr.height})`;
-      drill.style.opacity = "0";
-      window.setTimeout(onClose, 360);
-    } else {
-      onClose();
-    }
-  }, [onClose, portalRef]);
+    onClose();
+  }, [onClose]);
 
   useEffect(() => {
     closeButtonRef.current?.focus();
@@ -349,13 +311,13 @@ function ErrorDrill({
 
   return (
     <>
-      <div aria-hidden="true" className="fixed inset-0 z-30 bg-black/55 backdrop-blur-[2px]" onClick={close} />
+      <div aria-hidden="true" className="fixed inset-0 z-30 bg-black/55" onClick={close} />
       <div
         ref={drillRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="observe-error-dialog-title"
-        className="fixed z-40 flex flex-col overflow-hidden rounded-2xl border border-border-strong bg-surface shadow-lift-md"
+        className="fixed z-40 flex flex-col overflow-hidden rounded-md border border-border-strong bg-surface"
         style={{
           width: "min(1180px, 94vw)",
           height: "min(84vh, 760px)",
@@ -380,10 +342,10 @@ function ErrorDrill({
           <span className="font-mono text-[26px] font-semibold tabular-nums text-danger">{overview?.total ?? "—"}</span>
           <div className="min-w-0">
             <div id="observe-error-dialog-title" className="text-sm font-semibold">错误 · {RANGES.find((r) => r.key === range)?.label ?? range}</div>
-            <div className="mt-0.5 flex items-center gap-3 font-mono text-[11px] text-muted">
+            <div className="mt-0.5 flex items-center gap-3 text-[11px] text-muted">
               <span>{overview?.types ?? 0} 个类型</span>
-              {(overview?.new_types ?? 0) > 0 && <span className="rounded border border-accent-deep bg-accent-soft px-1.5 py-0.5 text-accent">🆕 {overview?.new_types} 新类型</span>}
-              {(overview?.spiking_types ?? 0) > 0 && <span className="rounded border border-danger/30 bg-danger/10 px-1.5 py-0.5 text-danger">⚡ {overview?.spiking_types} 爆发</span>}
+              {(overview?.new_types ?? 0) > 0 && <span>{overview?.new_types} 个新类型</span>}
+              {(overview?.spiking_types ?? 0) > 0 && <span className="font-semibold text-danger">{overview?.spiking_types} 个正在爆发</span>}
             </div>
           </div>
         </div>
@@ -400,7 +362,7 @@ function ErrorDrill({
                 key={f.k}
                 type="button"
                 onClick={() => setFacet(f.k)}
-                className={`rounded-[4px] px-2.5 py-1 font-mono text-[11px] transition-colors ${facet === f.k ? "bg-surface-3 text-fg shadow-[inset_0_0_0_1px_var(--ak-color-border-strong)]" : "text-muted hover:text-fg"}`}
+                className={`rounded-[4px] px-2.5 py-1 text-[11px] transition-colors ${facet === f.k ? "bg-surface-3 text-fg" : "text-muted hover:text-fg"}`}
               >
                 {f.l}
               </button>
@@ -411,7 +373,7 @@ function ErrorDrill({
             onChange={(e) => setQ(e.target.value)}
             aria-label="搜索错误"
             placeholder="按消息 / 模块过滤…"
-            className="w-[280px] rounded-md border border-border bg-bg px-3 py-1.5 font-mono text-[11.5px] text-fg outline-none focus:border-accent-deep"
+            className="w-[280px] rounded-md border border-border bg-bg px-3 py-1.5 text-[11.5px] text-fg outline-none focus:border-accent-deep"
           />
         </div>
 
@@ -421,7 +383,7 @@ function ErrorDrill({
             {sections.map((section) => (
               <div key={section.key}>
                 {section.label && (
-                  <div className="flex items-center justify-between px-2.5 pb-1 pt-3 font-mono text-[9.5px] uppercase tracking-[0.14em] text-subtle">
+                  <div className="flex items-center justify-between px-2.5 pb-1 pt-3 text-[11px] font-medium text-muted">
                     <span>{section.label}</span>
                     <span>{section.count} 次</span>
                   </div>
@@ -431,7 +393,7 @@ function ErrorDrill({
                 ))}
               </div>
             ))}
-            {sections.length === 0 && <div className="p-6 text-[12.5px] text-muted">区间内无错误 🎉</div>}
+            {sections.length === 0 && <div className="p-6 text-[12.5px] text-muted">所选区间内没有错误。</div>}
           </div>
 
           {detail ? (
@@ -460,20 +422,19 @@ function ErrorRow({ g, active, onClick }: { g: GErrGroup; active: boolean; onCli
     <button
       type="button"
       onClick={onClick}
-      className={`grid w-full grid-cols-[9px_1fr_auto] items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-[background-color,border-color] duration-150 ${active ? "border-border-strong bg-accent-soft" : "border-transparent hover:border-border hover:bg-surface-2"}`}
+      className={`grid w-full grid-cols-[9px_1fr_auto] items-center gap-2.5 border-b border-border px-3 py-2.5 text-left transition-colors duration-150 ${active ? "bg-accent-soft" : "hover:bg-surface-2"}`}
     >
-      <span className="relative flex h-2 w-2">
-        {g.is_spiking && <span className={`absolute inline-flex h-full w-full rounded-full ${TONE_BG[tone]} opacity-60 animate-ping`} />}
-        <span className={`relative inline-flex h-2 w-2 rounded-full ${TONE_BG[tone]} ${g.is_spiking ? "animate-pulse-dot" : ""}`} />
+      <span className="relative flex h-2 w-2" aria-hidden="true">
+        <span className={`relative inline-flex h-2 w-2 rounded-full ${TONE_BG[tone]}`} />
       </span>
       <div className="min-w-0">
         <div className="flex items-center gap-1.5 font-mono text-[12.5px]">
           <span className="truncate">{g.error_type}</span>
-          {g.is_new && <span className="rounded-sm bg-accent-soft px-1 py-px text-[8.5px] text-accent">NEW</span>}
-          {g.is_spiking && <span className="rounded-sm bg-danger/15 px-1 py-px text-[8.5px] text-danger">⚡</span>}
+          {g.is_new && <span className="text-[9px] font-semibold text-accent">新</span>}
+          {g.is_spiking && <span className="text-[9px] font-semibold text-danger">爆发</span>}
         </div>
         <div className="mt-0.5 truncate font-mono text-[10px] text-subtle">{g.logger_name}</div>
-        <div className="mt-1 flex gap-2.5 font-mono text-[10px] text-muted">
+        <div className="mt-1 flex gap-2.5 text-[10px] text-muted">
           <span><b className="font-semibold text-fg">{g.count}</b> 次</span>
           <span><b className="font-semibold text-fg">{g.sessions}</b> session</span>
         </div>
@@ -557,14 +518,14 @@ function ErrorDetail({
                     key={v.fingerprint}
                     type="button"
                     onClick={() => setVariant(i)}
-                    className={`rounded-md border px-2.5 py-1.5 text-left font-mono text-[10.5px] ${i === variant ? "border-accent-deep bg-accent-soft text-fg" : "border-border bg-bg text-muted"}`}
+                    className={`rounded border px-2.5 py-1.5 text-left text-[10.5px] ${i === variant ? "border-accent-deep bg-accent-soft text-fg" : "border-border bg-bg text-muted"}`}
                   >
                     <b className="text-fg">{v.count}</b> 次 · 变体 {i + 1}
                   </button>
                 ))}
               </div>
             )}
-            <pre className="m-0 max-h-[280px] overflow-auto rounded-lg border border-border bg-bg p-4 font-mono text-[11px] leading-relaxed text-muted">
+            <pre className="m-0 max-h-[280px] overflow-auto rounded border border-border bg-bg p-4 font-mono text-[11px] leading-relaxed text-muted">
               {activeVariant?.traceback_text || detail.traceback_text}
             </pre>
           </div>
@@ -573,7 +534,7 @@ function ErrorDetail({
           <div className="flex flex-col gap-2">
             {detail.occurrences.length === 0 && <div className="text-[12px] text-muted">无可关联的 session 现场。</div>}
             {detail.occurrences.map((o) => (
-              <div key={o.session_key} className="grid grid-cols-[auto_1fr_auto] items-center gap-3.5 rounded-lg border border-border bg-bg px-3.5 py-2.5">
+              <div key={o.session_key} className="grid grid-cols-[auto_1fr_auto] items-center gap-3.5 border-b border-border bg-bg px-3.5 py-2.5">
                 <span className="font-mono text-[11px] text-accent">{_shortTs(o.ts)}</span>
                 <div className="min-w-0">
                   <div className="truncate text-[12px]">{o.user_preview || "（无用户消息）"}</div>
@@ -582,9 +543,9 @@ function ErrorDetail({
                 <button
                   type="button"
                   onClick={() => onGoto(o.session_key)}
-                  className="whitespace-nowrap rounded-md border border-accent-deep bg-accent-soft px-2.5 py-1.5 font-mono text-[10.5px] text-accent-ink"
+                  className="whitespace-nowrap rounded border border-accent-deep bg-accent-soft px-2.5 py-1.5 text-[10.5px] text-accent-ink"
                 >
-                  查看对话 ↗
+                  查看对话
                 </button>
               </div>
             ))}
@@ -598,22 +559,22 @@ function ErrorDetail({
           type="button"
           onClick={() => detail.occurrences[0] && onGoto(detail.occurrences[0].session_key)}
           disabled={detail.occurrences.length === 0}
-          className="rounded-md border border-accent-deep bg-accent-soft px-3 py-2 font-mono text-[11px] text-accent-ink transition-[background-color,border-color,filter] duration-150 hover:brightness-110 active:brightness-95 disabled:opacity-40"
+          className="rounded border border-accent-deep bg-accent-soft px-3 py-2 text-[11px] text-accent-ink transition-colors disabled:opacity-40"
         >
-          查看最近对话 ↗
+          查看最近对话
         </button>
         <button
           type="button"
           onClick={() => void navigator.clipboard?.writeText(detail.traceback_text)}
-          className="rounded-md border border-border-strong bg-surface-2 px-3 py-2 font-mono text-[11px] text-muted transition-colors hover:text-fg"
+          className="rounded border border-border-strong bg-surface-2 px-3 py-2 text-[11px] text-muted transition-colors hover:text-fg"
         >
           复制 Traceback
         </button>
         <div className="flex-1" />
-        <button type="button" onClick={() => onStatus("acknowledged")} className="rounded-md border border-border-strong bg-surface-2 px-3 py-2 font-mono text-[11px] text-muted transition-colors hover:text-fg">
+        <button type="button" onClick={() => onStatus("acknowledged")} className="rounded border border-border-strong bg-surface-2 px-3 py-2 text-[11px] text-muted transition-colors hover:text-fg">
           标记已确认
         </button>
-        <button type="button" onClick={() => onStatus("ignored")} className="rounded-md border border-border-strong bg-surface-2 px-3 py-2 font-mono text-[11px] text-muted transition-colors hover:border-danger/40 hover:text-danger">
+        <button type="button" onClick={() => onStatus("ignored")} className="rounded border border-border-strong bg-surface-2 px-3 py-2 text-[11px] text-muted transition-colors hover:border-danger/40 hover:text-danger">
           忽略此类型
         </button>
       </div>
@@ -624,7 +585,7 @@ function ErrorDetail({
 function Blast({ label, value, small }: { label: string; value: string; small?: boolean }): ReactElement {
   return (
     <div className="bg-surface px-4 py-3">
-      <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-subtle">{label}</div>
+      <div className="text-[10px] text-subtle">{label}</div>
       <div className={`mt-1.5 font-mono font-semibold tabular-nums ${small ? "text-[12.5px]" : "text-[18px]"}`}>{value}</div>
     </div>
   );
@@ -635,19 +596,17 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
     <button
       type="button"
       onClick={onClick}
-      className={`-mb-px border-b-2 px-3 py-2 font-mono text-[11.5px] transition-colors ${active ? "border-accent text-fg" : "border-transparent text-muted hover:text-fg"}`}
+      className={`-mb-px border-b-2 px-3 py-2 text-[11.5px] transition-colors ${active ? "border-accent text-fg" : "border-transparent text-muted hover:text-fg"}`}
     >
       {children}
     </button>
   );
 }
 
-// 首屏骨架：发丝边框块 + scan 光流扫过，取代白屏 → 数据啪地弹出。
+// 首屏骨架保留稳定结构，避免加载时布局跳动。
 function SkelBlock({ className }: { className: string }): ReactElement {
   return (
-    <div className={`relative overflow-hidden rounded-2xl border border-border bg-surface ${className}`}>
-      <div className="absolute inset-0 -translate-x-full animate-scan bg-gradient-to-r from-transparent via-white/[0.04] to-transparent" />
-    </div>
+    <div className={`relative overflow-hidden rounded border border-border bg-surface-2 ${className}`} />
   );
 }
 
@@ -656,16 +615,16 @@ function ObserveSkeleton(): ReactElement {
     <div className="flex flex-col gap-4 p-6">
       <div className="flex items-end justify-between">
         <div className="flex flex-col gap-2">
-          <SkelBlock className="h-7 w-48 rounded-lg" />
+          <SkelBlock className="h-7 w-48" />
           <SkelBlock className="h-3 w-64 rounded" />
         </div>
-        <SkelBlock className="h-9 w-56 rounded-md" />
+        <SkelBlock className="h-9 w-56" />
       </div>
       <div className="grid grid-cols-4 gap-4">
         {[0, 1, 2, 3].map((i) => <SkelBlock key={i} className="h-[132px]" />)}
       </div>
       <div className="grid grid-cols-2 gap-4">
-        {[0, 1, 2, 3].map((i) => <SkelBlock key={i} className="h-[218px] rounded-lg" />)}
+        {[0, 1, 2, 3].map((i) => <SkelBlock key={i} className="h-[218px]" />)}
       </div>
     </div>
   );
@@ -734,18 +693,15 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
   return (
     <>
       <div
-        className="flex flex-col gap-4 p-6 transition-[filter,transform,opacity] duration-[420ms]"
-        style={drillOpen ? { filter: "blur(7px)", transform: "scale(0.97)", opacity: 0.5, pointerEvents: "none" } : undefined}
+        className="flex flex-col gap-4 p-6 transition-opacity duration-150"
+        style={drillOpen ? { opacity: 0.35, pointerEvents: "none" } : undefined}
       >
         {/* header + range switcher */}
         <div className="flex items-end justify-between">
           <div>
             <div className="flex items-center gap-2.5">
               <span className="detail-title">Observe · 监测</span>
-              <span className="flex items-center gap-1.5 rounded-full border border-success/25 bg-success/10 px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-success">
-                <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse-dot" />
-                Live
-              </span>
+              <span className="text-[11px] font-medium text-success">实时更新</span>
             </div>
             <div className="detail-subtext">
               Agent 主循环遥测 · Token / 迭代 / 错误
@@ -768,7 +724,7 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
                   key={r.key}
                   type="button"
                   onClick={() => setRange(r.key)}
-                  className={`min-h-10 rounded-[4px] px-2.5 py-1 font-mono text-[11px] transition-[background-color,color,filter] duration-150 active:brightness-95 ${range === r.key ? "bg-accent text-accent-ink hover:brightness-110" : "text-muted hover:bg-surface-3 hover:text-fg"}`}
+                  className={`min-h-10 rounded-[4px] px-2.5 py-1 text-[11px] transition-colors ${range === r.key ? "bg-accent text-accent-ink" : "text-muted hover:bg-surface-3 hover:text-fg"}`}
                   aria-pressed={range === r.key}
                 >
                   {r.label}
@@ -780,7 +736,7 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
 
         {/* KPI tiles */}
         <Grid columns={4}>
-          <div className="animate-fade-up" style={{ animationDelay: "0ms" }}>
+          <div>
             <MetricTile label="对话轮数" value={_compact(overview.turns)} delta={_delta(turnSeries)} sub={overview.last_ts ? `最近 ${_shortTs(overview.last_ts)}` : "无记录"} tone="accent" spark={turnSeries} />
           </div>
           {/* 错误卡 = 传送门：点击 FLIP 放大成排障台 */}
@@ -788,43 +744,36 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
             type="button"
             ref={portalRef}
             onClick={() => setDrillOpen(true)}
-            className="group relative animate-fade-up cursor-pointer rounded-2xl border-0 bg-transparent p-0 text-left transition-transform duration-200 hover:-translate-y-0.5"
-            style={{ animationDelay: "60ms" }}
+            className="group relative cursor-pointer border-0 bg-transparent p-0 text-left"
             aria-label={`打开错误分析，共 ${gErrTotal} 条错误`}
           >
-            {gErrTotal > 0 && (
-              <span className="absolute left-[68px] top-[18px] z-10 flex h-2 w-2">
-                {(gErr?.spiking_types ?? 0) > 0 && <span className="absolute inline-flex h-full w-full rounded-full bg-danger opacity-60 animate-ping" />}
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-danger animate-pulse-dot" />
-              </span>
-            )}
-            <span className="pointer-events-none absolute right-4 top-4 z-10 font-mono text-[10px] text-danger opacity-0 transition-opacity group-hover:opacity-100">展开分析 →</span>
+            <span className="pointer-events-none absolute right-4 top-4 z-10 text-[10px] font-medium text-danger">查看分析</span>
             <MetricTile label="错误" value={_compact(gErrTotal)} sub={`${gErr?.types ?? 0} 类型 · 点击展开`} tone="danger" spark={gErrSpark} />
           </button>
-          <div className="animate-fade-up" style={{ animationDelay: "120ms" }}>
+          <div>
             <MetricTile label="被动 KV 命中率" value={_pct(overview.passive_cache_hit_rate)} sub={`主动 ${_pct(overview.proactive_cache_hit_rate)}`} tone="success" spark={passiveHitSeries} />
           </div>
-          <div className="animate-fade-up" style={{ animationDelay: "180ms" }}>
+          <div>
             <MetricTile label="平均迭代" value={overview.avg_iteration != null ? overview.avg_iteration.toFixed(1) : "—"} unit={`峰 ${overview.max_iteration}`} sub="每轮 LLM 调用次数" tone="warning" spark={iterSeries} />
           </div>
         </Grid>
 
         {/* trend charts */}
         <Grid columns={2}>
-          <Card title="输入 Token 趋势" style={{ animationDelay: "220ms" }}>
+          <Card title="输入 Token 趋势">
             <TrendChart data={labelled(tokenSeries)} kind="area" tone="accent" valueFmt={_compact} />
           </Card>
-          <Card title="平均迭代趋势" style={{ animationDelay: "280ms" }}>
+          <Card title="平均迭代趋势">
             <TrendChart data={labelled(iterSeries)} kind="area" tone="warning" valueFmt={(n) => n.toFixed(1)} />
           </Card>
-          <Card title="全局被动链路命中率趋势" style={{ animationDelay: "340ms" }}>
+          <Card title="全局被动链路命中率趋势">
             <TrendChart data={labelled(passiveHitSeries)} kind="area" tone="success" valueFmt={(n) => `${n.toFixed(0)}%`} />
           </Card>
-          <Card title="全局主动链路命中率趋势" style={{ animationDelay: "400ms" }}>
+          <Card title="全局主动链路命中率趋势">
             <TrendChart data={labelled(proactiveHitSeries)} kind="area" tone="accent" valueFmt={(n) => `${n.toFixed(0)}%`} />
           </Card>
-          <Card title="错误趋势" style={{ animationDelay: "460ms" }}>
-            <TrendChart data={labelled(errorSeries)} kind="bar" tone="danger" valueFmt={(n) => String(n)} empty="区间内无错误 🎉" />
+          <Card title="错误趋势">
+            <TrendChart data={labelled(errorSeries)} kind="bar" tone="danger" valueFmt={(n) => String(n)} empty="所选区间内没有错误" />
           </Card>
         </Grid>
       </div>
@@ -837,7 +786,7 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
 window.AkashicDashboard.registerPlugin({
   id: "observe",
   label: "Observe 监测",
-  viewLabel: "observe",
+  viewLabel: "监测",
   layout: "workbench",
   pageSize: 30,
   rowKey: "id",
@@ -847,9 +796,9 @@ window.AkashicDashboard.registerPlugin({
   },
 
   columns: [
-    { key: "session_key", label: "Session", width: 120, cellClass: "mono cell-session", rawTitle: true },
-    { key: "ts", label: "Time", width: 96, fmt: "mono-time", cellClass: "mono cell-time", rawTitle: true },
-    { key: "error", label: "Error", flex: true, cellClass: "content-preview" },
+    { key: "session_key", label: "会话", width: 120, cellClass: "mono cell-session", rawTitle: true },
+    { key: "ts", label: "时间", width: 96, fmt: "mono-time", cellClass: "mono cell-time", rawTitle: true },
+    { key: "error", label: "错误", flex: true, cellClass: "content-preview" },
   ],
 
   async getCount(): Promise<number | null> {

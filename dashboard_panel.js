@@ -1,4 +1,4 @@
-// ../akashic-plugin/observe/dashboard_panel.tsx
+// dashboard_panel.tsx
 import {
   useCallback,
   useEffect,
@@ -20,9 +20,9 @@ var SOURCE_LABEL = {
   thread: "\u5B50\u7EBF\u7A0B"
 };
 var STATUS_META = {
-  active: { label: "\u25CF \u6D3B\u8DC3", tone: "warning" },
-  acknowledged: { label: "\u25CC \u5DF2\u786E\u8BA4", tone: "muted" },
-  ignored: { label: "\u2713 \u5DF2\u5FFD\u7565", tone: "success" }
+  active: { label: "\u6D3B\u8DC3", tone: "warning" },
+  acknowledged: { label: "\u5DF2\u786E\u8BA4", tone: "muted" },
+  ignored: { label: "\u5DF2\u5FFD\u7565", tone: "success" }
 };
 var TONE_BG = {
   danger: "bg-danger",
@@ -75,10 +75,10 @@ function Card({ title, children, bodyClass, style }) {
   return /* @__PURE__ */ jsxs(
     "div",
     {
-      className: "flex animate-fade-up flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-lift-sm transition-[box-shadow,border-color] duration-200 hover:border-border-strong hover:shadow-lift-md",
+      className: "flex flex-col overflow-hidden border border-border bg-surface",
       style,
       children: [
-        /* @__PURE__ */ jsx("div", { className: "flex items-center justify-between border-b border-border px-4 py-2.5", children: /* @__PURE__ */ jsx("h3", { className: "font-mono text-[10px] uppercase tracking-[0.2em] text-muted", children: title }) }),
+        /* @__PURE__ */ jsx("div", { className: "flex items-center justify-between border-b border-border px-4 py-2.5", children: /* @__PURE__ */ jsx("h3", { className: "text-[12px] font-medium text-muted", children: title }) }),
         /* @__PURE__ */ jsx("div", { className: bodyClass ?? "p-4", children })
       ]
     }
@@ -130,43 +130,9 @@ function ErrorDrill({
       alive = false;
     };
   }, [selFp, range]);
-  useEffect(() => {
-    const drill = drillRef.current;
-    const portal = portalRef.current;
-    if (!drill || !portal) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const tr = portal.getBoundingClientRect();
-    const cr = drill.getBoundingClientRect();
-    drill.style.transition = "none";
-    drill.style.transformOrigin = "top left";
-    drill.style.transform = `translate(${tr.left - cr.left}px, ${tr.top - cr.top}px) scale(${tr.width / cr.width}, ${tr.height / cr.height})`;
-    drill.style.opacity = "0";
-    void drill.getBoundingClientRect();
-    requestAnimationFrame(() => {
-      drill.style.transition = "transform .44s cubic-bezier(.2,.85,.25,1), opacity .26s ease";
-      drill.style.transform = "";
-      drill.style.opacity = "";
-    });
-  }, [portalRef]);
   const close = useCallback(() => {
-    const drill = drillRef.current;
-    const portal = portalRef.current;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      onClose();
-      return;
-    }
-    if (drill && portal) {
-      const tr = portal.getBoundingClientRect();
-      const cr = drill.getBoundingClientRect();
-      drill.style.transition = "transform .4s cubic-bezier(.4,0,.6,1), opacity .3s ease";
-      drill.style.transformOrigin = "top left";
-      drill.style.transform = `translate(${tr.left - cr.left}px, ${tr.top - cr.top}px) scale(${tr.width / cr.width}, ${tr.height / cr.height})`;
-      drill.style.opacity = "0";
-      window.setTimeout(onClose, 360);
-    } else {
-      onClose();
-    }
-  }, [onClose, portalRef]);
+    onClose();
+  }, [onClose]);
   useEffect(() => {
     closeButtonRef.current?.focus();
     return () => portalRef.current?.focus();
@@ -205,7 +171,7 @@ function ErrorDrill({
     close();
   };
   return /* @__PURE__ */ jsxs(Fragment, { children: [
-    /* @__PURE__ */ jsx("div", { "aria-hidden": "true", className: "fixed inset-0 z-30 bg-black/55 backdrop-blur-[2px]", onClick: close }),
+    /* @__PURE__ */ jsx("div", { "aria-hidden": "true", className: "fixed inset-0 z-30 bg-black/55", onClick: close }),
     /* @__PURE__ */ jsxs(
       "div",
       {
@@ -213,7 +179,7 @@ function ErrorDrill({
         role: "dialog",
         "aria-modal": "true",
         "aria-labelledby": "observe-error-dialog-title",
-        className: "fixed z-40 flex flex-col overflow-hidden rounded-2xl border border-border-strong bg-surface shadow-lift-md",
+        className: "fixed z-40 flex flex-col overflow-hidden rounded-md border border-border-strong bg-surface",
         style: {
           width: "min(1180px, 94vw)",
           height: "min(84vh, 760px)",
@@ -242,20 +208,18 @@ function ErrorDrill({
                 "\u9519\u8BEF \xB7 ",
                 RANGES.find((r) => r.key === range)?.label ?? range
               ] }),
-              /* @__PURE__ */ jsxs("div", { className: "mt-0.5 flex items-center gap-3 font-mono text-[11px] text-muted", children: [
+              /* @__PURE__ */ jsxs("div", { className: "mt-0.5 flex items-center gap-3 text-[11px] text-muted", children: [
                 /* @__PURE__ */ jsxs("span", { children: [
                   overview?.types ?? 0,
                   " \u4E2A\u7C7B\u578B"
                 ] }),
-                (overview?.new_types ?? 0) > 0 && /* @__PURE__ */ jsxs("span", { className: "rounded border border-accent-deep bg-accent-soft px-1.5 py-0.5 text-accent", children: [
-                  "\u{1F195} ",
+                (overview?.new_types ?? 0) > 0 && /* @__PURE__ */ jsxs("span", { children: [
                   overview?.new_types,
-                  " \u65B0\u7C7B\u578B"
+                  " \u4E2A\u65B0\u7C7B\u578B"
                 ] }),
-                (overview?.spiking_types ?? 0) > 0 && /* @__PURE__ */ jsxs("span", { className: "rounded border border-danger/30 bg-danger/10 px-1.5 py-0.5 text-danger", children: [
-                  "\u26A1 ",
+                (overview?.spiking_types ?? 0) > 0 && /* @__PURE__ */ jsxs("span", { className: "font-semibold text-danger", children: [
                   overview?.spiking_types,
-                  " \u7206\u53D1"
+                  " \u4E2A\u6B63\u5728\u7206\u53D1"
                 ] })
               ] })
             ] })
@@ -270,7 +234,7 @@ function ErrorDrill({
               {
                 type: "button",
                 onClick: () => setFacet(f.k),
-                className: `rounded-[4px] px-2.5 py-1 font-mono text-[11px] transition-colors ${facet === f.k ? "bg-surface-3 text-fg shadow-[inset_0_0_0_1px_var(--ak-color-border-strong)]" : "text-muted hover:text-fg"}`,
+                className: `rounded-[4px] px-2.5 py-1 text-[11px] transition-colors ${facet === f.k ? "bg-surface-3 text-fg" : "text-muted hover:text-fg"}`,
                 children: f.l
               },
               f.k
@@ -282,14 +246,14 @@ function ErrorDrill({
                 onChange: (e) => setQ(e.target.value),
                 "aria-label": "\u641C\u7D22\u9519\u8BEF",
                 placeholder: "\u6309\u6D88\u606F / \u6A21\u5757\u8FC7\u6EE4\u2026",
-                className: "w-[280px] rounded-md border border-border bg-bg px-3 py-1.5 font-mono text-[11.5px] text-fg outline-none focus:border-accent-deep"
+                className: "w-[280px] rounded-md border border-border bg-bg px-3 py-1.5 text-[11.5px] text-fg outline-none focus:border-accent-deep"
               }
             )
           ] }),
           /* @__PURE__ */ jsxs("div", { className: "grid min-h-0 flex-1 grid-cols-[340px_1fr]", children: [
             /* @__PURE__ */ jsxs("div", { className: "overflow-auto border-r border-border p-1.5", children: [
               sections.map((section) => /* @__PURE__ */ jsxs("div", { children: [
-                section.label && /* @__PURE__ */ jsxs("div", { className: "flex items-center justify-between px-2.5 pb-1 pt-3 font-mono text-[9.5px] uppercase tracking-[0.14em] text-subtle", children: [
+                section.label && /* @__PURE__ */ jsxs("div", { className: "flex items-center justify-between px-2.5 pb-1 pt-3 text-[11px] font-medium text-muted", children: [
                   /* @__PURE__ */ jsx("span", { children: section.label }),
                   /* @__PURE__ */ jsxs("span", { children: [
                     section.count,
@@ -298,7 +262,7 @@ function ErrorDrill({
                 ] }),
                 section.items.map((g) => /* @__PURE__ */ jsx(ErrorRow, { g, active: g.fingerprint === selFp, onClick: () => setSelFp(g.fingerprint) }, g.fingerprint))
               ] }, section.key)),
-              sections.length === 0 && /* @__PURE__ */ jsx("div", { className: "p-6 text-[12.5px] text-muted", children: "\u533A\u95F4\u5185\u65E0\u9519\u8BEF \u{1F389}" })
+              sections.length === 0 && /* @__PURE__ */ jsx("div", { className: "p-6 text-[12.5px] text-muted", children: "\u6240\u9009\u533A\u95F4\u5185\u6CA1\u6709\u9519\u8BEF\u3002" })
             ] }),
             detail ? /* @__PURE__ */ jsx(
               ErrorDetail,
@@ -326,20 +290,17 @@ function ErrorRow({ g, active, onClick }) {
     {
       type: "button",
       onClick,
-      className: `grid w-full grid-cols-[9px_1fr_auto] items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-[background-color,border-color] duration-150 ${active ? "border-border-strong bg-accent-soft" : "border-transparent hover:border-border hover:bg-surface-2"}`,
+      className: `grid w-full grid-cols-[9px_1fr_auto] items-center gap-2.5 border-b border-border px-3 py-2.5 text-left transition-colors duration-150 ${active ? "bg-accent-soft" : "hover:bg-surface-2"}`,
       children: [
-        /* @__PURE__ */ jsxs("span", { className: "relative flex h-2 w-2", children: [
-          g.is_spiking && /* @__PURE__ */ jsx("span", { className: `absolute inline-flex h-full w-full rounded-full ${TONE_BG[tone]} opacity-60 animate-ping` }),
-          /* @__PURE__ */ jsx("span", { className: `relative inline-flex h-2 w-2 rounded-full ${TONE_BG[tone]} ${g.is_spiking ? "animate-pulse-dot" : ""}` })
-        ] }),
+        /* @__PURE__ */ jsx("span", { className: "relative flex h-2 w-2", "aria-hidden": "true", children: /* @__PURE__ */ jsx("span", { className: `relative inline-flex h-2 w-2 rounded-full ${TONE_BG[tone]}` }) }),
         /* @__PURE__ */ jsxs("div", { className: "min-w-0", children: [
           /* @__PURE__ */ jsxs("div", { className: "flex items-center gap-1.5 font-mono text-[12.5px]", children: [
             /* @__PURE__ */ jsx("span", { className: "truncate", children: g.error_type }),
-            g.is_new && /* @__PURE__ */ jsx("span", { className: "rounded-sm bg-accent-soft px-1 py-px text-[8.5px] text-accent", children: "NEW" }),
-            g.is_spiking && /* @__PURE__ */ jsx("span", { className: "rounded-sm bg-danger/15 px-1 py-px text-[8.5px] text-danger", children: "\u26A1" })
+            g.is_new && /* @__PURE__ */ jsx("span", { className: "text-[9px] font-semibold text-accent", children: "\u65B0" }),
+            g.is_spiking && /* @__PURE__ */ jsx("span", { className: "text-[9px] font-semibold text-danger", children: "\u7206\u53D1" })
           ] }),
           /* @__PURE__ */ jsx("div", { className: "mt-0.5 truncate font-mono text-[10px] text-subtle", children: g.logger_name }),
-          /* @__PURE__ */ jsxs("div", { className: "mt-1 flex gap-2.5 font-mono text-[10px] text-muted", children: [
+          /* @__PURE__ */ jsxs("div", { className: "mt-1 flex gap-2.5 text-[10px] text-muted", children: [
             /* @__PURE__ */ jsxs("span", { children: [
               /* @__PURE__ */ jsx("b", { className: "font-semibold text-fg", children: g.count }),
               " \u6B21"
@@ -419,7 +380,7 @@ function ErrorDetail({
           {
             type: "button",
             onClick: () => setVariant(i),
-            className: `rounded-md border px-2.5 py-1.5 text-left font-mono text-[10.5px] ${i === variant ? "border-accent-deep bg-accent-soft text-fg" : "border-border bg-bg text-muted"}`,
+            className: `rounded border px-2.5 py-1.5 text-left text-[10.5px] ${i === variant ? "border-accent-deep bg-accent-soft text-fg" : "border-border bg-bg text-muted"}`,
             children: [
               /* @__PURE__ */ jsx("b", { className: "text-fg", children: v.count }),
               " \u6B21 \xB7 \u53D8\u4F53 ",
@@ -428,11 +389,11 @@ function ErrorDetail({
           },
           v.fingerprint
         )) }),
-        /* @__PURE__ */ jsx("pre", { className: "m-0 max-h-[280px] overflow-auto rounded-lg border border-border bg-bg p-4 font-mono text-[11px] leading-relaxed text-muted", children: activeVariant?.traceback_text || detail.traceback_text })
+        /* @__PURE__ */ jsx("pre", { className: "m-0 max-h-[280px] overflow-auto rounded border border-border bg-bg p-4 font-mono text-[11px] leading-relaxed text-muted", children: activeVariant?.traceback_text || detail.traceback_text })
       ] }),
       tab === "occ" && /* @__PURE__ */ jsxs("div", { className: "flex flex-col gap-2", children: [
         detail.occurrences.length === 0 && /* @__PURE__ */ jsx("div", { className: "text-[12px] text-muted", children: "\u65E0\u53EF\u5173\u8054\u7684 session \u73B0\u573A\u3002" }),
-        detail.occurrences.map((o) => /* @__PURE__ */ jsxs("div", { className: "grid grid-cols-[auto_1fr_auto] items-center gap-3.5 rounded-lg border border-border bg-bg px-3.5 py-2.5", children: [
+        detail.occurrences.map((o) => /* @__PURE__ */ jsxs("div", { className: "grid grid-cols-[auto_1fr_auto] items-center gap-3.5 border-b border-border bg-bg px-3.5 py-2.5", children: [
           /* @__PURE__ */ jsx("span", { className: "font-mono text-[11px] text-accent", children: _shortTs(o.ts) }),
           /* @__PURE__ */ jsxs("div", { className: "min-w-0", children: [
             /* @__PURE__ */ jsx("div", { className: "truncate text-[12px]", children: o.user_preview || "\uFF08\u65E0\u7528\u6237\u6D88\u606F\uFF09" }),
@@ -446,8 +407,8 @@ function ErrorDetail({
             {
               type: "button",
               onClick: () => onGoto(o.session_key),
-              className: "whitespace-nowrap rounded-md border border-accent-deep bg-accent-soft px-2.5 py-1.5 font-mono text-[10.5px] text-accent-ink",
-              children: "\u67E5\u770B\u5BF9\u8BDD \u2197"
+              className: "whitespace-nowrap rounded border border-accent-deep bg-accent-soft px-2.5 py-1.5 text-[10.5px] text-accent-ink",
+              children: "\u67E5\u770B\u5BF9\u8BDD"
             }
           )
         ] }, o.session_key))
@@ -460,8 +421,8 @@ function ErrorDetail({
           type: "button",
           onClick: () => detail.occurrences[0] && onGoto(detail.occurrences[0].session_key),
           disabled: detail.occurrences.length === 0,
-          className: "rounded-md border border-accent-deep bg-accent-soft px-3 py-2 font-mono text-[11px] text-accent-ink transition-[background-color,border-color,filter] duration-150 hover:brightness-110 active:brightness-95 disabled:opacity-40",
-          children: "\u67E5\u770B\u6700\u8FD1\u5BF9\u8BDD \u2197"
+          className: "rounded border border-accent-deep bg-accent-soft px-3 py-2 text-[11px] text-accent-ink transition-colors disabled:opacity-40",
+          children: "\u67E5\u770B\u6700\u8FD1\u5BF9\u8BDD"
         }
       ),
       /* @__PURE__ */ jsx(
@@ -469,19 +430,19 @@ function ErrorDetail({
         {
           type: "button",
           onClick: () => void navigator.clipboard?.writeText(detail.traceback_text),
-          className: "rounded-md border border-border-strong bg-surface-2 px-3 py-2 font-mono text-[11px] text-muted transition-colors hover:text-fg",
+          className: "rounded border border-border-strong bg-surface-2 px-3 py-2 text-[11px] text-muted transition-colors hover:text-fg",
           children: "\u590D\u5236 Traceback"
         }
       ),
       /* @__PURE__ */ jsx("div", { className: "flex-1" }),
-      /* @__PURE__ */ jsx("button", { type: "button", onClick: () => onStatus("acknowledged"), className: "rounded-md border border-border-strong bg-surface-2 px-3 py-2 font-mono text-[11px] text-muted transition-colors hover:text-fg", children: "\u6807\u8BB0\u5DF2\u786E\u8BA4" }),
-      /* @__PURE__ */ jsx("button", { type: "button", onClick: () => onStatus("ignored"), className: "rounded-md border border-border-strong bg-surface-2 px-3 py-2 font-mono text-[11px] text-muted transition-colors hover:border-danger/40 hover:text-danger", children: "\u5FFD\u7565\u6B64\u7C7B\u578B" })
+      /* @__PURE__ */ jsx("button", { type: "button", onClick: () => onStatus("acknowledged"), className: "rounded border border-border-strong bg-surface-2 px-3 py-2 text-[11px] text-muted transition-colors hover:text-fg", children: "\u6807\u8BB0\u5DF2\u786E\u8BA4" }),
+      /* @__PURE__ */ jsx("button", { type: "button", onClick: () => onStatus("ignored"), className: "rounded border border-border-strong bg-surface-2 px-3 py-2 text-[11px] text-muted transition-colors hover:border-danger/40 hover:text-danger", children: "\u5FFD\u7565\u6B64\u7C7B\u578B" })
     ] })
   ] });
 }
 function Blast({ label, value, small }) {
   return /* @__PURE__ */ jsxs("div", { className: "bg-surface px-4 py-3", children: [
-    /* @__PURE__ */ jsx("div", { className: "font-mono text-[9px] uppercase tracking-[0.12em] text-subtle", children: label }),
+    /* @__PURE__ */ jsx("div", { className: "text-[10px] text-subtle", children: label }),
     /* @__PURE__ */ jsx("div", { className: `mt-1.5 font-mono font-semibold tabular-nums ${small ? "text-[12.5px]" : "text-[18px]"}`, children: value })
   ] });
 }
@@ -491,25 +452,25 @@ function TabBtn({ active, onClick, children }) {
     {
       type: "button",
       onClick,
-      className: `-mb-px border-b-2 px-3 py-2 font-mono text-[11.5px] transition-colors ${active ? "border-accent text-fg" : "border-transparent text-muted hover:text-fg"}`,
+      className: `-mb-px border-b-2 px-3 py-2 text-[11.5px] transition-colors ${active ? "border-accent text-fg" : "border-transparent text-muted hover:text-fg"}`,
       children
     }
   );
 }
 function SkelBlock({ className }) {
-  return /* @__PURE__ */ jsx("div", { className: `relative overflow-hidden rounded-2xl border border-border bg-surface ${className}`, children: /* @__PURE__ */ jsx("div", { className: "absolute inset-0 -translate-x-full animate-scan bg-gradient-to-r from-transparent via-white/[0.04] to-transparent" }) });
+  return /* @__PURE__ */ jsx("div", { className: `relative overflow-hidden rounded border border-border bg-surface-2 ${className}` });
 }
 function ObserveSkeleton() {
   return /* @__PURE__ */ jsxs("div", { className: "flex flex-col gap-4 p-6", children: [
     /* @__PURE__ */ jsxs("div", { className: "flex items-end justify-between", children: [
       /* @__PURE__ */ jsxs("div", { className: "flex flex-col gap-2", children: [
-        /* @__PURE__ */ jsx(SkelBlock, { className: "h-7 w-48 rounded-lg" }),
+        /* @__PURE__ */ jsx(SkelBlock, { className: "h-7 w-48" }),
         /* @__PURE__ */ jsx(SkelBlock, { className: "h-3 w-64 rounded" })
       ] }),
-      /* @__PURE__ */ jsx(SkelBlock, { className: "h-9 w-56 rounded-md" })
+      /* @__PURE__ */ jsx(SkelBlock, { className: "h-9 w-56" })
     ] }),
     /* @__PURE__ */ jsx("div", { className: "grid grid-cols-4 gap-4", children: [0, 1, 2, 3].map((i) => /* @__PURE__ */ jsx(SkelBlock, { className: "h-[132px]" }, i)) }),
-    /* @__PURE__ */ jsx("div", { className: "grid grid-cols-2 gap-4", children: [0, 1, 2, 3].map((i) => /* @__PURE__ */ jsx(SkelBlock, { className: "h-[218px] rounded-lg" }, i)) })
+    /* @__PURE__ */ jsx("div", { className: "grid grid-cols-2 gap-4", children: [0, 1, 2, 3].map((i) => /* @__PURE__ */ jsx(SkelBlock, { className: "h-[218px]" }, i)) })
   ] });
 }
 function ObserveMain(_props) {
@@ -563,17 +524,14 @@ function ObserveMain(_props) {
     /* @__PURE__ */ jsxs(
       "div",
       {
-        className: "flex flex-col gap-4 p-6 transition-[filter,transform,opacity] duration-[420ms]",
-        style: drillOpen ? { filter: "blur(7px)", transform: "scale(0.97)", opacity: 0.5, pointerEvents: "none" } : void 0,
+        className: "flex flex-col gap-4 p-6 transition-opacity duration-150",
+        style: drillOpen ? { opacity: 0.35, pointerEvents: "none" } : void 0,
         children: [
           /* @__PURE__ */ jsxs("div", { className: "flex items-end justify-between", children: [
             /* @__PURE__ */ jsxs("div", { children: [
               /* @__PURE__ */ jsxs("div", { className: "flex items-center gap-2.5", children: [
                 /* @__PURE__ */ jsx("span", { className: "detail-title", children: "Observe \xB7 \u76D1\u6D4B" }),
-                /* @__PURE__ */ jsxs("span", { className: "flex items-center gap-1.5 rounded-full border border-success/25 bg-success/10 px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-success", children: [
-                  /* @__PURE__ */ jsx("span", { className: "h-1.5 w-1.5 rounded-full bg-success animate-pulse-dot" }),
-                  "Live"
-                ] })
+                /* @__PURE__ */ jsx("span", { className: "text-[11px] font-medium text-success", children: "\u5B9E\u65F6\u66F4\u65B0" })
               ] }),
               /* @__PURE__ */ jsxs("div", { className: "detail-subtext", children: [
                 "Agent \u4E3B\u5FAA\u73AF\u9065\u6D4B \xB7 Token / \u8FED\u4EE3 / \u9519\u8BEF",
@@ -600,7 +558,7 @@ function ObserveMain(_props) {
                 {
                   type: "button",
                   onClick: () => setRange(r.key),
-                  className: `min-h-10 rounded-[4px] px-2.5 py-1 font-mono text-[11px] transition-[background-color,color,filter] duration-150 active:brightness-95 ${range === r.key ? "bg-accent text-accent-ink hover:brightness-110" : "text-muted hover:bg-surface-3 hover:text-fg"}`,
+                  className: `min-h-10 rounded-[4px] px-2.5 py-1 text-[11px] transition-colors ${range === r.key ? "bg-accent text-accent-ink" : "text-muted hover:bg-surface-3 hover:text-fg"}`,
                   "aria-pressed": range === r.key,
                   children: r.label
                 },
@@ -609,35 +567,30 @@ function ObserveMain(_props) {
             ] })
           ] }),
           /* @__PURE__ */ jsxs(Grid, { columns: 4, children: [
-            /* @__PURE__ */ jsx("div", { className: "animate-fade-up", style: { animationDelay: "0ms" }, children: /* @__PURE__ */ jsx(MetricTile, { label: "\u5BF9\u8BDD\u8F6E\u6570", value: _compact(overview.turns), delta: _delta(turnSeries), sub: overview.last_ts ? `\u6700\u8FD1 ${_shortTs(overview.last_ts)}` : "\u65E0\u8BB0\u5F55", tone: "accent", spark: turnSeries }) }),
+            /* @__PURE__ */ jsx("div", { children: /* @__PURE__ */ jsx(MetricTile, { label: "\u5BF9\u8BDD\u8F6E\u6570", value: _compact(overview.turns), delta: _delta(turnSeries), sub: overview.last_ts ? `\u6700\u8FD1 ${_shortTs(overview.last_ts)}` : "\u65E0\u8BB0\u5F55", tone: "accent", spark: turnSeries }) }),
             /* @__PURE__ */ jsxs(
               "button",
               {
                 type: "button",
                 ref: portalRef,
                 onClick: () => setDrillOpen(true),
-                className: "group relative animate-fade-up cursor-pointer rounded-2xl border-0 bg-transparent p-0 text-left transition-transform duration-200 hover:-translate-y-0.5",
-                style: { animationDelay: "60ms" },
+                className: "group relative cursor-pointer border-0 bg-transparent p-0 text-left",
                 "aria-label": `\u6253\u5F00\u9519\u8BEF\u5206\u6790\uFF0C\u5171 ${gErrTotal} \u6761\u9519\u8BEF`,
                 children: [
-                  gErrTotal > 0 && /* @__PURE__ */ jsxs("span", { className: "absolute left-[68px] top-[18px] z-10 flex h-2 w-2", children: [
-                    (gErr?.spiking_types ?? 0) > 0 && /* @__PURE__ */ jsx("span", { className: "absolute inline-flex h-full w-full rounded-full bg-danger opacity-60 animate-ping" }),
-                    /* @__PURE__ */ jsx("span", { className: "relative inline-flex h-2 w-2 rounded-full bg-danger animate-pulse-dot" })
-                  ] }),
-                  /* @__PURE__ */ jsx("span", { className: "pointer-events-none absolute right-4 top-4 z-10 font-mono text-[10px] text-danger opacity-0 transition-opacity group-hover:opacity-100", children: "\u5C55\u5F00\u5206\u6790 \u2192" }),
+                  /* @__PURE__ */ jsx("span", { className: "pointer-events-none absolute right-4 top-4 z-10 text-[10px] font-medium text-danger", children: "\u67E5\u770B\u5206\u6790" }),
                   /* @__PURE__ */ jsx(MetricTile, { label: "\u9519\u8BEF", value: _compact(gErrTotal), sub: `${gErr?.types ?? 0} \u7C7B\u578B \xB7 \u70B9\u51FB\u5C55\u5F00`, tone: "danger", spark: gErrSpark })
                 ]
               }
             ),
-            /* @__PURE__ */ jsx("div", { className: "animate-fade-up", style: { animationDelay: "120ms" }, children: /* @__PURE__ */ jsx(MetricTile, { label: "\u88AB\u52A8 KV \u547D\u4E2D\u7387", value: _pct(overview.passive_cache_hit_rate), sub: `\u4E3B\u52A8 ${_pct(overview.proactive_cache_hit_rate)}`, tone: "success", spark: passiveHitSeries }) }),
-            /* @__PURE__ */ jsx("div", { className: "animate-fade-up", style: { animationDelay: "180ms" }, children: /* @__PURE__ */ jsx(MetricTile, { label: "\u5E73\u5747\u8FED\u4EE3", value: overview.avg_iteration != null ? overview.avg_iteration.toFixed(1) : "\u2014", unit: `\u5CF0 ${overview.max_iteration}`, sub: "\u6BCF\u8F6E LLM \u8C03\u7528\u6B21\u6570", tone: "warning", spark: iterSeries }) })
+            /* @__PURE__ */ jsx("div", { children: /* @__PURE__ */ jsx(MetricTile, { label: "\u88AB\u52A8 KV \u547D\u4E2D\u7387", value: _pct(overview.passive_cache_hit_rate), sub: `\u4E3B\u52A8 ${_pct(overview.proactive_cache_hit_rate)}`, tone: "success", spark: passiveHitSeries }) }),
+            /* @__PURE__ */ jsx("div", { children: /* @__PURE__ */ jsx(MetricTile, { label: "\u5E73\u5747\u8FED\u4EE3", value: overview.avg_iteration != null ? overview.avg_iteration.toFixed(1) : "\u2014", unit: `\u5CF0 ${overview.max_iteration}`, sub: "\u6BCF\u8F6E LLM \u8C03\u7528\u6B21\u6570", tone: "warning", spark: iterSeries }) })
           ] }),
           /* @__PURE__ */ jsxs(Grid, { columns: 2, children: [
-            /* @__PURE__ */ jsx(Card, { title: "\u8F93\u5165 Token \u8D8B\u52BF", style: { animationDelay: "220ms" }, children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(tokenSeries), kind: "area", tone: "accent", valueFmt: _compact }) }),
-            /* @__PURE__ */ jsx(Card, { title: "\u5E73\u5747\u8FED\u4EE3\u8D8B\u52BF", style: { animationDelay: "280ms" }, children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(iterSeries), kind: "area", tone: "warning", valueFmt: (n) => n.toFixed(1) }) }),
-            /* @__PURE__ */ jsx(Card, { title: "\u5168\u5C40\u88AB\u52A8\u94FE\u8DEF\u547D\u4E2D\u7387\u8D8B\u52BF", style: { animationDelay: "340ms" }, children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(passiveHitSeries), kind: "area", tone: "success", valueFmt: (n) => `${n.toFixed(0)}%` }) }),
-            /* @__PURE__ */ jsx(Card, { title: "\u5168\u5C40\u4E3B\u52A8\u94FE\u8DEF\u547D\u4E2D\u7387\u8D8B\u52BF", style: { animationDelay: "400ms" }, children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(proactiveHitSeries), kind: "area", tone: "accent", valueFmt: (n) => `${n.toFixed(0)}%` }) }),
-            /* @__PURE__ */ jsx(Card, { title: "\u9519\u8BEF\u8D8B\u52BF", style: { animationDelay: "460ms" }, children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(errorSeries), kind: "bar", tone: "danger", valueFmt: (n) => String(n), empty: "\u533A\u95F4\u5185\u65E0\u9519\u8BEF \u{1F389}" }) })
+            /* @__PURE__ */ jsx(Card, { title: "\u8F93\u5165 Token \u8D8B\u52BF", children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(tokenSeries), kind: "area", tone: "accent", valueFmt: _compact }) }),
+            /* @__PURE__ */ jsx(Card, { title: "\u5E73\u5747\u8FED\u4EE3\u8D8B\u52BF", children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(iterSeries), kind: "area", tone: "warning", valueFmt: (n) => n.toFixed(1) }) }),
+            /* @__PURE__ */ jsx(Card, { title: "\u5168\u5C40\u88AB\u52A8\u94FE\u8DEF\u547D\u4E2D\u7387\u8D8B\u52BF", children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(passiveHitSeries), kind: "area", tone: "success", valueFmt: (n) => `${n.toFixed(0)}%` }) }),
+            /* @__PURE__ */ jsx(Card, { title: "\u5168\u5C40\u4E3B\u52A8\u94FE\u8DEF\u547D\u4E2D\u7387\u8D8B\u52BF", children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(proactiveHitSeries), kind: "area", tone: "accent", valueFmt: (n) => `${n.toFixed(0)}%` }) }),
+            /* @__PURE__ */ jsx(Card, { title: "\u9519\u8BEF\u8D8B\u52BF", children: /* @__PURE__ */ jsx(TrendChart, { data: labelled(errorSeries), kind: "bar", tone: "danger", valueFmt: (n) => String(n), empty: "\u6240\u9009\u533A\u95F4\u5185\u6CA1\u6709\u9519\u8BEF" }) })
           ] })
         ]
       }
@@ -648,7 +601,7 @@ function ObserveMain(_props) {
 window.AkashicDashboard.registerPlugin({
   id: "observe",
   label: "Observe \u76D1\u6D4B",
-  viewLabel: "observe",
+  viewLabel: "\u76D1\u6D4B",
   layout: "workbench",
   pageSize: 30,
   rowKey: "id",
@@ -656,9 +609,9 @@ window.AkashicDashboard.registerPlugin({
     return `${total} \u8F6E\u9065\u6D4B`;
   },
   columns: [
-    { key: "session_key", label: "Session", width: 120, cellClass: "mono cell-session", rawTitle: true },
-    { key: "ts", label: "Time", width: 96, fmt: "mono-time", cellClass: "mono cell-time", rawTitle: true },
-    { key: "error", label: "Error", flex: true, cellClass: "content-preview" }
+    { key: "session_key", label: "\u4F1A\u8BDD", width: 120, cellClass: "mono cell-session", rawTitle: true },
+    { key: "ts", label: "\u65F6\u95F4", width: 96, fmt: "mono-time", cellClass: "mono cell-time", rawTitle: true },
+    { key: "error", label: "\u9519\u8BEF", flex: true, cellClass: "content-preview" }
   ],
   async getCount() {
     try {
