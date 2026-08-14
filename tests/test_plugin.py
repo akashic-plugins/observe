@@ -52,6 +52,7 @@ def _load_plugin_module():
 module = _load_plugin_module()
 ObservePlugin = module.ObservePlugin
 GlobalErrorCollector = module.GlobalErrorCollector
+KVCacheCommandModule = module.KVCacheCommandModule
 
 
 class _Emitter:
@@ -65,6 +66,90 @@ class _Emitter:
 class _DiscardOutbound:
     async def dispatch(self, outbound: object) -> bool:
         return True
+
+
+@pytest.mark.asyncio
+async def test_observe_owns_kvcache_command_and_existing_reply(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    db_path = workspace / "observe" / "observe.db"
+    db_path.parent.mkdir(parents=True)
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute(
+            """
+            CREATE TABLE turns(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                source TEXT NOT NULL,
+                session_key TEXT NOT NULL,
+                user_msg TEXT,
+                llm_output TEXT NOT NULL DEFAULT '',
+                react_cache_prompt_tokens INTEGER,
+                react_cache_hit_tokens INTEGER
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO turns(
+                ts, source, session_key, user_msg, llm_output,
+                react_cache_prompt_tokens, react_cache_hit_tokens
+            ) VALUES(?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "2026-04-19T03:20:00+00:00",
+                "agent",
+                "telegram:100",
+                "again",
+                "ok",
+                300,
+                260,
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    plugin = ObservePlugin()
+    plugin.context = SimpleNamespace(workspace=workspace)
+    state = SimpleNamespace(
+        session_key="telegram:100",
+        msg=SimpleNamespace(
+            content="/kvcache",
+            channel="telegram",
+            chat_id="100",
+            timestamp=datetime.now(timezone.utc),
+        ),
+    )
+    frame = SimpleNamespace(input=state, slots={"session:session": object()})
+
+    await plugin.before_turn_modules()[0].run(frame)
+
+    reply = frame.slots["session:ctx"].abort_reply
+    assert plugin.telegram_bot_commands() == [("kvcache", "查看 KVCache 状态")]
+    assert frame.slots["session:ctx"].abort is True
+    assert "KVCache" in reply
+    assert "260 / 300" in reply
+
+
+@pytest.mark.asyncio
+async def test_kvcache_command_preserves_alias_and_missing_data_result() -> None:
+    state = SimpleNamespace(
+        session_key="telegram:100",
+        msg=SimpleNamespace(
+            content="/cache_status",
+            channel="telegram",
+            chat_id="100",
+            timestamp=datetime.now(timezone.utc),
+        ),
+    )
+    frame = SimpleNamespace(input=state, slots={"session:session": object()})
+
+    await KVCacheCommandModule(None).run(frame)
+
+    assert frame.slots["session:ctx"].abort_reply == (
+        "暂无 KVCache 数据（observe 数据库不存在）。"
+    )
 
 
 async def _run_mobile_turn_observe_seam(
@@ -87,6 +172,7 @@ async def _run_mobile_turn_observe_seam(
         kv_store=PluginKVStore(workspace / "plugin-data/observe-builtin/.kv.json"),
         workspace=workspace,
         scope=scope,
+        _can_start_tasks=lambda: True,
     )
     manager = SessionManager(workspace)
     committed: list[TurnCommitted] = []
@@ -192,6 +278,7 @@ async def test_observe_plugin_activate_and_terminate(tmp_path: Path) -> None:
         kv_store=PluginKVStore(tmp_path / ".kv.json"),
         workspace=tmp_path,
         scope=scope,
+        _can_start_tasks=lambda: True,
     )
     plugin.activate()
     await asyncio.sleep(0.05)

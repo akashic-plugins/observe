@@ -15,6 +15,7 @@ from core.memory.events import MemoryWritten, RetrievalCompleted
 
 from .collector import GlobalErrorCollector
 from .dashboard import ObserveDashboardReader
+from .kvcache_command import KVCacheCommandModule
 from .mobile_kvcache import KVCacheDashboardReader
 from .retention import run_retention_if_needed
 from .writer import TraceWriter
@@ -46,7 +47,17 @@ class ObservePlugin(Plugin):
         )
 
     name = "observe"
-    version = "1.2.0"
+    version = "1.3.0"
+
+    def telegram_bot_commands(self) -> list[tuple[str, str]]:
+        return [("kvcache", "查看 KVCache 状态")]
+
+    def before_turn_modules(self) -> list[object]:
+        workspace = self.context.workspace
+        db_path = (
+            None if workspace is None else workspace / "observe" / "observe.db"
+        )
+        return [KVCacheCommandModule(db_path)]
 
     def activate(self) -> None:
         workspace = self.context.workspace

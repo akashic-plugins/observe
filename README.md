@@ -2,6 +2,8 @@
 
 Akashic 可观测性插件，负责采集 Turn、检索、记忆写入和全局错误遥测。
 
+插件同时拥有 `/kvcache`（兼容别名 `/cache_status`）只读命令。命令只读取当前会话在 `observe.db` 中的缓存统计；Core 只负责挂载 BeforeTurn module，不理解 Observe schema。
+
 ## 移动端
 
 插件自带一个移动端 Observe 入口，并在同一看板内提供两个任务视图：
