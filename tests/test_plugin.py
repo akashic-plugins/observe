@@ -728,9 +728,25 @@ async def test_real_manager_publishes_v3_observe_mobile_query_and_candidate(
         assert candidate_snapshot is not None
         candidate_root = candidate_snapshot.composition_root
         assert candidate_root is not None
+        dashboard_host.prepare_snapshot(candidate_snapshot)
+        assert len(candidate_snapshot.dashboard_bindings) == 1
+        candidate_dashboard = candidate_snapshot.dashboard_bindings[0]
+        assert isinstance(candidate_dashboard, DashboardBinding)
+        assert candidate_dashboard.validation is True
+        candidate_mobile = candidate_snapshot.mobile_ui_registry.binding(
+            "observe"
+        )
+        assert candidate_mobile is not None
+        assert candidate_mobile.is_live()
         await manager.discard_prepared("observe")
         assert candidate_root.receipt().effects == ()
         assert candidate_root.topology_view().listeners == ()
+        assert candidate_snapshot.dashboard_bindings == ()
+        assert not candidate_mobile.is_live()
+        assert all(
+            not binding.validation for binding in dashboard_host._bindings.values()
+        )
+        assert provider.catalog()["items"]
         after = (
             hashlib.sha256(stable_db.read_bytes()).hexdigest()
             if stable_db.exists()
@@ -740,6 +756,8 @@ async def test_real_manager_publishes_v3_observe_mobile_query_and_candidate(
         await manager.terminate_all()
         assert stable_root.receipt().effects == ()
         assert stable_root.topology_view().listeners == ()
+        assert not dashboard_host._bindings
+        assert provider.catalog()["items"] == []
     finally:
         if manager.current_snapshot is not None:
             await manager.terminate_all()
