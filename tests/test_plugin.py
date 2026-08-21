@@ -125,7 +125,9 @@ def _manager_for_observe(tmp_path: Path) -> tuple[PluginManager, Path]:
     shutil.copytree(
         Path(module.__file__ or "").resolve().parent,
         plugin_root,
-        ignore=shutil.ignore_patterns(".git", ".pytest_cache", "__pycache__"),
+        ignore=shutil.ignore_patterns(
+            ".git", ".akashic-core", ".pytest_cache", "__pycache__"
+        ),
     )
     manager = PluginManager(
         plugin_dirs=[plugin_root.parent],
@@ -674,7 +676,9 @@ async def test_real_manager_publishes_v3_observe_mobile_query_and_candidate(
     shutil.copytree(
         Path(module.__file__ or "").resolve().parent,
         plugin_root,
-        ignore=shutil.ignore_patterns(".git", ".pytest_cache", "__pycache__"),
+        ignore=shutil.ignore_patterns(
+            ".git", ".akashic-core", ".pytest_cache", "__pycache__"
+        ),
     )
     manager = PluginManager(
         plugin_dirs=[plugin_root.parent],
@@ -688,12 +692,7 @@ async def test_real_manager_publishes_v3_observe_mobile_query_and_candidate(
         snapshot = manager.current_snapshot
         assert snapshot is not None
         assert snapshot.mobile_ui_registry is not None
-        dashboard_host = PluginDashboardHost(
-            workspace=workspace,
-            memory_admin=object(),
-            memory_store=object(),
-            core_routes=(),
-        )
+        dashboard_host = PluginDashboardHost(core_routes=())
         dashboard_host.prepare_initial_snapshot(snapshot)
         manager.bind_dashboard_preparer(
             dashboard_host.prepare_snapshot,

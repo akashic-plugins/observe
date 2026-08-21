@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: kachofugetsu09/akashic-agent
-          ref: 5f2c8fb5c64496897475bd3226812b2e17fcf37e
+          ref: 3005f838bcd96e2cbc58616aede46e4f39df4523
           path: .akashic-core
       - uses: actions/setup-python@v5
         with:
