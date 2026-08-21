@@ -46,7 +46,10 @@ jobs:
       - name: Install exact Core runtime
         run: |
           python -m venv .venv
-          .venv/bin/python -m pip install -r .akashic-core/requirements.txt pytest pytest-asyncio
+          .venv/bin/python -m pip install \
+            -r .akashic-core/requirements.txt \
+            -r .akashic-core/requirements-dev.txt \
+            pytest pytest-asyncio
       - name: Verify Observe v3 composition
         env:
           AKASHIC_AGENT_ROOT: ${{ github.workspace }}/.akashic-core
@@ -57,7 +60,7 @@ jobs:
       - name: Check v3 source types
         env:
           PYTHONPATH: .akashic-core
-        run: .venv/bin/pyright --level error plugin.py collector.py dashboard.py
+        run: .venv/bin/pyright --pythonpath .venv/bin/python --level error plugin.py collector.py dashboard.py
       - name: Compile Python sources
         run: python -m compileall -q .
       - name: Check diff formatting
