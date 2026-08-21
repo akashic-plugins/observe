@@ -15,7 +15,7 @@ import sys
 import threading
 import traceback
 import types
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -84,11 +84,8 @@ class GlobalErrorCollector:
     def __init__(
         self,
         writer: _Emitter,
-        *,
-        create_task: Callable[..., asyncio.Task[Any]] = asyncio.create_task,
     ) -> None:
         self._writer = writer
-        self._create_task = create_task
         self._lock = threading.Lock()
         self._buckets: dict[tuple[str, str], _BucketAgg] = {}
         self._flush_task: asyncio.Task[None] | None = None
@@ -102,34 +99,50 @@ class GlobalErrorCollector:
 
     # ── 生命周期 ─────────────────────────────────
 
-    def install(self) -> None:
+    async def install(
+        self,
+        *,
+        spawn_task: Callable[..., Awaitable[asyncio.Task[Any]]] | None = None,
+    ) -> None:
         if self._installed:
             return
         self._installed = True
-        # 1. root logging handler（level >= ERROR）
-        handler = _CollectorLogHandler(self)
-        logging.getLogger().addHandler(handler)
-        self._log_handler = handler
-        # 2. 同步未捕获异常
-        self._prev_excepthook = sys.excepthook
-        sys.excepthook = self._on_sys_except
-        # 3. 线程崩溃
-        self._prev_threadhook = threading.excepthook
-        threading.excepthook = self._on_thread_except
-        # 4. asyncio 任务异常 + flush task
         try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop is not None:
-            self._loop = loop
-            self._prev_loop_handler = loop.get_exception_handler()
-            loop.set_exception_handler(self._on_loop_except)
-            self._flush_task = self._create_task(
-                self._flush_loop(),
-                name="observe_error_flush",
-            )
-        logger.info("global error collector installed")
+            # 1. root logging handler（level >= ERROR）
+            handler = _CollectorLogHandler(self)
+            logging.getLogger().addHandler(handler)
+            self._log_handler = handler
+            # 2. 同步未捕获异常
+            self._prev_excepthook = sys.excepthook
+            sys.excepthook = self._on_sys_except
+            # 3. 线程崩溃
+            self._prev_threadhook = threading.excepthook
+            threading.excepthook = self._on_thread_except
+            # 4. asyncio 任务异常 + flush task
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None:
+                self._loop = loop
+                self._prev_loop_handler = loop.get_exception_handler()
+                loop.set_exception_handler(self._on_loop_except)
+                flush = self._flush_loop()
+                if spawn_task is None:
+                    self._flush_task = asyncio.create_task(
+                        flush,
+                        name="observe_error_flush",
+                    )
+                else:
+                    self._flush_task = await spawn_task(
+                        flush,
+                        name="observe_error_flush",
+                    )
+            logger.info("global error collector installed")
+        except BaseException:
+            # 安装是事务性的：任务准入失败时不得遗留进程级 hook。
+            await self.uninstall()
+            raise
 
     async def uninstall(self) -> None:
         if not self._installed:

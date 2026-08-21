@@ -1,6 +1,25 @@
 # observe
 
-Akashic 可观测性插件，负责采集 Turn、检索、记忆写入和全局错误遥测。
+Akashic 可观测性插件（Plugin API v3），负责采集已提交 Turn 和全局错误遥测，
+并提供 Dashboard 与移动端只读投影。
+
+插件通过模块级 `api_version = 3` / `apply(ctx, config)` 接入 Core：
+
+- `turn.after_turn.committed`：在 Core 提交 `TurnCommitted` 后写入 Observe 数据库；
+- `core.ui_slots`：发布移动端静态资源和只读 query；
+- `workspace_roots = ("observe",)`：数据库、retention marker 和候选副本都由 Core 分配。
+
+Observe 不再导出 v2 `Plugin` class、`activate()`、`terminate()`、`mobile_ui()` 或
+`mobile_ui_query()` ABI。Dashboard 使用 `register(app, DashboardContext)`，只读取当前
+generation 的声明式 workspace root。
+
+历史 `rag_queries` 与 `memory_writes` 表保留供兼容读取；Core
+`5f2c8fb5c64496897475bd3226812b2e17fcf37e` 提供的
+`proactive.finished`、`memory.retrieval.completed` 和 `memory.written` typed
+Observe seam 都直接转换为既有 Observe 表结构，不复制或伪造领域 DTO。
+
+插件测试与 CI 固定使用上述 Core commit；candidate 验证只写 Core 分配的临时
+workspace，formal publish 后才继续写正式 `observe` workspace。
 
 ## 移动端
 

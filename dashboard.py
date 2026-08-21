@@ -10,6 +10,8 @@ import threading
 
 from fastapi import FastAPI
 
+from agent.plugin_composition import DashboardContext
+
 from .db import open_db
 
 # Observe monitoring dashboard: aggregates the agent-loop telemetry written to
@@ -38,8 +40,8 @@ def _resolve_range(range_token: str) -> tuple[str | None, int]:
 
 
 class ObserveDashboardReader:
-    def __init__(self, workspace: Path) -> None:
-        self.db_path = workspace / "observe" / "observe.db"
+    def __init__(self, observe_root: Path) -> None:
+        self.db_path = observe_root / "observe.db"
         self._lock = threading.RLock()
 
     # Aggregate the metric-card figures over the selected window.
@@ -356,8 +358,12 @@ class ObserveDashboardReader:
         return out
 
 
-def register(app: FastAPI, plugin_dir: Path, workspace: Path) -> None:
-    reader = ObserveDashboardReader(workspace)
+def register(app: FastAPI, context: DashboardContext) -> None:
+    """Register read-only Observe routes against the generation-owned workspace."""
+
+    # 1. Dashboard only receives the declared Observe root, never the full workspace.
+    observe_root = context.workspace_root("observe")
+    reader = ObserveDashboardReader(observe_root)
 
     @app.get("/api/dashboard/observe/overview")
     def observe_overview(range: str = "24h") -> dict[str, Any]:

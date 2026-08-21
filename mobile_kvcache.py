@@ -10,8 +10,8 @@ import threading
 class KVCacheDashboardReader:
     """从 observe 数据库读取桌面与移动端共用的 KV Cache 投影。"""
 
-    def __init__(self, workspace: Path) -> None:
-        self.db_path = workspace / "observe" / "observe.db"
+    def __init__(self, observe_root: Path) -> None:
+        self.db_path = observe_root / "observe.db"
         self._lock = threading.RLock()
 
     def get_summary(self) -> dict[str, Any]:
