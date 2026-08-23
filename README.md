@@ -13,13 +13,17 @@ Observe 不再导出 v2 `Plugin` class、`activate()`、`terminate()`、`mobile_
 `mobile_ui_query()` ABI。Dashboard 使用 `register(app, DashboardContext)`，只读取当前
 generation 的声明式 workspace root。
 
-历史 `rag_queries` 与 `memory_writes` 表保留供兼容读取；Core
-`5f2c8fb5c64496897475bd3226812b2e17fcf37e` 提供的
-`proactive.finished`、`memory.retrieval.completed` 和 `memory.written` typed
-Observe seam 都直接转换为既有 Observe 表结构，不复制或伪造领域 DTO。
+历史 `rag_queries` 与 `memory_writes` 表保留供兼容读取；
+`memory.retrieval.completed` 和 `memory.written` typed Observe seam 直接转换为
+既有 Observe 表结构，不复制或伪造领域 DTO。
 
-插件测试与 CI 固定使用上述 Core commit；candidate 验证只写 Core 分配的临时
-workspace，formal publish 后才继续写正式 `observe` workspace。
+被动、Wake 与 Drift 都只从同一个 `TurnCommitted` 事实写入 Turn trace。普通
+Wake/Drift Turn 根据 `channel` 投影为既有的 `proactive`/`drift` source；quiet Wake
+没有进入 after-turn，也不会产生 `TurnCommitted`，因此 Observe 不伪造 delivered
+trace。旧 `proactive.finished` 不再注册，也没有双写兼容路径。
+
+插件测试与 CI 固定使用 workflow 声明的 Core commit；candidate 验证只写 Core
+分配的临时 workspace，formal publish 后才继续写正式 `observe` workspace。
 
 ## 移动端
 
