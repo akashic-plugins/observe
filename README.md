@@ -17,10 +17,14 @@ generation 的声明式 workspace root。
 `memory.retrieval.completed` 和 `memory.written` typed Observe seam 直接转换为
 既有 Observe 表结构，不复制或伪造领域 DTO。
 
-被动、Wake 与 Drift 都只从同一个 `TurnCommitted` 事实写入 Turn trace。普通
-Wake/Drift Turn 根据 `channel` 投影为既有的 `proactive`/`drift` source；quiet Wake
-没有进入 after-turn，也不会产生 `TurnCommitted`，因此 Observe 不伪造 delivered
-trace。旧 `proactive.finished` 不再注册，也没有双写兼容路径。
+所有普通 Turn 都只从同一个 `TurnCommitted` 事实写入 trace，并根据 `channel`
+投影为既有 source：Wake 是 `proactive`，显式 `drift` channel 是 `drift`，其余是
+`agent`。当前新 Drift duty 由 Wake 选中并在同一个 `channel=wake` Turn 中执行，
+因此仍归入 `proactive`；显式 `channel=drift` 只是一条普通 channel 分类合同，不代表
+当前 Drift duty 拥有独立 Turn。未来若需要把它单列，必须另立 provenance 合同。
+
+quiet Wake 没有进入 after-turn，也不会产生 `TurnCommitted`，因此 Observe 不伪造
+delivered trace。旧 `proactive.finished` 不再注册，也没有双写兼容路径。
 
 插件测试与 CI 固定使用 workflow 声明的 Core commit；candidate 验证只写 Core
 分配的临时 workspace，formal publish 后才继续写正式 `observe` workspace。

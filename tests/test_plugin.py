@@ -307,7 +307,7 @@ async def test_v3_observes_memory_domain_events_without_duplicate_rows(
 
 
 @pytest.mark.asyncio
-async def test_passive_wake_and_drift_share_one_committed_trace_path(
+async def test_committed_channel_classification_uses_one_trace_path(
     tmp_path: Path,
 ) -> None:
     root, workspace = await _mount_observe(tmp_path)
@@ -343,6 +343,7 @@ async def test_passive_wake_and_drift_share_one_committed_trace_path(
         assert rows == [
             ("turn-1", "agent"),
             ("turn-wake", "proactive"),
+            # 显式 drift channel 只验证普通 Turn 分类，不模拟 Wake 内的 Drift duty。
             ("turn-drift", "drift"),
         ]
     finally:
