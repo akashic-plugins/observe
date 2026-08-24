@@ -30,11 +30,10 @@ from agent.plugins.static_manifest import load_static_plugin_manifest
 from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
 from agent.turn_events.observe import (
     MEMORY_WRITTEN,
-    PROACTIVE_FINISHED,
     RETRIEVAL_COMPLETED,
 )
 from bus.event_bus import EventBus
-from bus.events_lifecycle import ProactiveFinished, TurnCommitted
+from bus.events_lifecycle import TurnCommitted
 from core.memory.events import (
     MemoryWritten,
     RetrievalCompleted,
@@ -73,11 +72,12 @@ def _turn_event(
     *,
     assistant_message_id: str | None = "mobile:demo:2",
     turn_id: str = "turn-1",
+    channel: str = "mobile",
     model_usage: dict[str, object] | None = None,
 ) -> TurnCommitted:
     return TurnCommitted(
         session_key="mobile:demo",
-        channel="mobile",
+        channel=channel,
         chat_id="demo",
         input_message="hi",
         persisted_user_message="hi",
@@ -174,25 +174,6 @@ async def _wait_for_table_rows(
     )
 
 
-def _proactive_finished_event() -> ProactiveFinished:
-    return ProactiveFinished(
-        session_key="proactive:demo",
-        tick_id="tick-1",
-        mode="proactive",
-        terminal_action="deliver",
-        gate_exit=None,
-        skip_reason="",
-        steps_taken=2,
-        alert_count=1,
-        content_count=1,
-        context_count=1,
-        final_message="proactive result",
-        llm_call_count=3,
-        cache_prompt_tokens=120,
-        cache_hit_tokens=90,
-    )
-
-
 def _retrieval_completed_event() -> RetrievalCompleted:
     return RetrievalCompleted(
         session_key="mobile:demo",
@@ -253,11 +234,10 @@ async def test_v3_apply_emits_turn_trace_and_disposes_all_effects(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_v3_observes_core_domain_events_without_duplicate_rows(
+async def test_v3_observes_memory_domain_events_without_duplicate_rows(
     tmp_path: Path,
 ) -> None:
     root, workspace = await _mount_observe(tmp_path)
-    proactive = _proactive_finished_event()
     retrieval = _retrieval_completed_event()
     memory = _memory_written_event()
     db_path = workspace / "observe" / "observe.db"
@@ -269,22 +249,13 @@ async def test_v3_observes_core_domain_events_without_duplicate_rows(
         assert module._to_memory_write_trace(memory).superseded_ids == [
             "memory-old"
         ]
-        await root.context.observe(PROACTIVE_FINISHED, proactive)
         await root.context.observe(RETRIEVAL_COMPLETED, retrieval)
         await root.context.observe(MEMORY_WRITTEN, memory)
-        await _wait_for_table_rows(db_path, "turns", 1)
         await _wait_for_table_rows(db_path, "rag_queries", 1)
         await _wait_for_table_rows(db_path, "memory_writes", 1)
 
         conn = sqlite3.connect(db_path)
         try:
-            proactive_row = conn.execute(
-                """
-                SELECT source, session_key, llm_output, react_iteration_count,
-                       react_cache_prompt_tokens, react_cache_hit_tokens
-                FROM turns
-                """
-            ).fetchone()
             retrieval_row = conn.execute(
                 """
                 SELECT caller, session_key, query, orig_query, aux_queries,
@@ -299,14 +270,6 @@ async def test_v3_observes_core_domain_events_without_duplicate_rows(
                 FROM memory_writes
                 """
             ).fetchone()
-            assert proactive_row == (
-                "proactive",
-                "proactive:demo",
-                "proactive result",
-                3,
-                120,
-                90,
-            )
             assert retrieval_row[0:5] == (
                 "passive",
                 "mobile:demo",
@@ -334,11 +297,55 @@ async def test_v3_observes_core_domain_events_without_duplicate_rows(
                 '["memory-old"]',
                 None,
             )
-            assert conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0] == 1
+            assert conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0] == 0
             assert conn.execute("SELECT COUNT(*) FROM rag_queries").fetchone()[0] == 1
             assert conn.execute("SELECT COUNT(*) FROM memory_writes").fetchone()[0] == 1
         finally:
             conn.close()
+    finally:
+        await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_committed_channel_classification_uses_one_trace_path(
+    tmp_path: Path,
+) -> None:
+    root, workspace = await _mount_observe(tmp_path)
+    db_path = workspace / "observe" / "observe.db"
+    try:
+        listeners = root.topology_view().listeners
+        assert sum("turn.after_turn.committed" in item for item in listeners) == 1
+        assert all("proactive.finished" not in item for item in listeners)
+
+        root.context.emit(AFTER_TURN_COMMITTED, _turn_event())
+        root.context.emit(
+            AFTER_TURN_COMMITTED,
+            _turn_event(
+                channel="wake",
+                turn_id="turn-wake",
+                assistant_message_id="wake:default:2",
+            ),
+        )
+        root.context.emit(
+            AFTER_TURN_COMMITTED,
+            _turn_event(
+                channel="drift",
+                turn_id="turn-drift",
+                assistant_message_id="drift:default:2",
+            ),
+        )
+        await _wait_for_table_rows(db_path, "turns", 3)
+
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT turn_id, source FROM turns ORDER BY id"
+            ).fetchall()
+        assert rows == [
+            ("turn-1", "agent"),
+            ("turn-wake", "proactive"),
+            # 显式 drift channel 只验证普通 Turn 分类，不模拟 Wake 内的 Drift duty。
+            ("turn-drift", "drift"),
+        ]
     finally:
         await root.dispose()
 
@@ -580,7 +587,7 @@ def test_static_manifest_and_module_exports_match() -> None:
     manifest = load_static_plugin_manifest(plugin_dir)
     composable = ComposablePlugin.from_module(module)
     assert manifest.name == composable.name == "observe"
-    assert manifest.version == composable.version == "1.3.0"
+    assert manifest.version == composable.version == "1.4.0"
     assert manifest.api_version == composable.api_version == 3
     assert manifest.entrypoint == "plugin.py"
     assert composable.dashboard_module == "dashboard.py"

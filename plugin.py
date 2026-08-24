@@ -16,10 +16,9 @@ from agent.plugin_composition import (
 from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
 from agent.turn_events.observe import (
     MEMORY_WRITTEN,
-    PROACTIVE_FINISHED,
     RETRIEVAL_COMPLETED,
 )
-from bus.events_lifecycle import ProactiveFinished, TurnCommitted
+from bus.events_lifecycle import TurnCommitted
 from core.memory.events import MemoryWritten, RetrievalCompleted
 
 from .collector import GlobalErrorCollector
@@ -33,7 +32,7 @@ logger = logging.getLogger("plugin.observe")
 
 api_version = 3
 name = "observe"
-version = "1.3.0"
+version = "1.4.0"
 inject = (UI_SLOTS,)
 workspace_roots = ("observe",)
 dashboard_module = "dashboard.py"
@@ -76,16 +75,12 @@ async def apply(ctx: Context, config: object) -> None:
 
     _ = await ctx.on(AFTER_TURN_COMMITTED, observe_turn_committed)
 
-    def observe_proactive_finished(event: ProactiveFinished) -> None:
-        writer.emit(_to_proactive_turn_trace(event))
-
     def observe_retrieval(event: RetrievalCompleted) -> None:
         writer.emit(_to_rag_query_log(event))
 
     def observe_memory_written(event: MemoryWritten) -> None:
         writer.emit(_to_memory_write_trace(event))
 
-    _ = await ctx.on(PROACTIVE_FINISHED, observe_proactive_finished)
     _ = await ctx.on(RETRIEVAL_COMPLETED, observe_retrieval)
     _ = await ctx.on(MEMORY_WRITTEN, observe_memory_written)
 
@@ -201,7 +196,7 @@ def _emit_turn_trace(writer: _ObserveWriter, event: TurnCommitted) -> None:
     tool_calls = _slim_tool_calls(tool_chain)
     writer.emit(
         TurnTraceEvent(
-            source="agent",
+            source=_turn_source(event),
             session_key=event.session_key,
             turn_id=event.turn_id or None,
             assistant_message_id=event.assistant_message_id,
@@ -285,21 +280,12 @@ def _model_usage_int(model_usage: Mapping[str, object], name: str) -> int | None
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _to_proactive_turn_trace(event: ProactiveFinished) -> TurnTraceEvent:
-    summary = event.final_message or event.skip_reason or event.gate_exit or ""
-    return TurnTraceEvent(
-        source=event.mode,
-        session_key=event.session_key,
-        user_msg=None,
-        llm_output=summary,
-        raw_llm_output=None,
-        react_iteration_count=event.llm_call_count,
-        react_input_sum_tokens=None,
-        react_input_peak_tokens=None,
-        react_final_input_tokens=None,
-        react_cache_prompt_tokens=event.cache_prompt_tokens,
-        react_cache_hit_tokens=event.cache_hit_tokens,
-    )
+def _turn_source(event: TurnCommitted) -> Literal["agent", "proactive", "drift"]:
+    if event.channel == "wake":
+        return "proactive"
+    if event.channel == "drift":
+        return "drift"
+    return "agent"
 
 
 def _to_rag_query_log(event: RetrievalCompleted):
