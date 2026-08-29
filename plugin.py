@@ -36,6 +36,12 @@ version = "1.4.0"
 inject = (UI_SLOTS,)
 workspace_roots = ("observe",)
 dashboard_module = "dashboard.py"
+web_module = "web_module.js"
+web_requires = ("workbench.panels.v1",)
+web_provides = ()
+web_contract_digests = {
+    "workbench.panels.v1": "724b282c22c4b3f3a36967ab664c4dfd8bce4257665f99459000306938caf527",
+}
 
 
 class _ObserveWriter(Protocol):
