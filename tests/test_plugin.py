@@ -109,6 +109,7 @@ async def _mount_observe(tmp_path: Path) -> tuple[CompositionRoot, Path]:
         inject=module.inject,
         runtime=PluginRuntime(
             plugin_id="observe",
+            generation_id="observe:test",
             plugin_dir=plugin_dir,
             data_dir=tmp_path / "plugin-data",
             workspace=workspace,
