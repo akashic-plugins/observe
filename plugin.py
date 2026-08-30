@@ -32,10 +32,16 @@ logger = logging.getLogger("plugin.observe")
 
 api_version = 3
 name = "observe"
-version = "1.4.0"
+version = "1.4.1"
 inject = (UI_SLOTS,)
 workspace_roots = ("observe",)
 dashboard_module = "dashboard.py"
+web_module = "web_module.js"
+web_requires = ("workbench.panels.v2",)
+web_provides = ()
+web_contract_digests = {
+    "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
+}
 
 
 class _ObserveWriter(Protocol):

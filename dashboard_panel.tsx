@@ -1,4 +1,3 @@
-/// <reference path="../../types/akashic-dashboard.d.ts" />
 import {
   useCallback,
   useEffect,
@@ -7,7 +6,24 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import { Grid, MetricTile, TrendChart, Sparkline, Chip, api, type ChartTone } from "@akashic/dashboard-ui";
+import { createRoot } from "react-dom/client";
+import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
+import type {
+  ChartTone,
+  WorkbenchDispatch,
+  WorkbenchPanelEntry,
+  WorkbenchUi,
+} from "@akashic/workbench-ui-v2";
+
+let dashboardRequest: WebHostContextV1["http"]["request"] | null = null;
+
+async function api<T = unknown>(path: string, init?: RequestInit): Promise<T> {
+  if (!dashboardRequest) throw new Error("Observe 工作台面板未激活");
+  const response = await dashboardRequest(path, init);
+  const body = await response.json() as T & { detail?: unknown; message?: unknown };
+  if (!response.ok) throw new Error(String(body.detail ?? body.message ?? `HTTP ${response.status}`));
+  return body;
+}
 
 interface Overview {
   range: string;
@@ -212,12 +228,16 @@ function Card({ title, children, bodyClass, style }: { title: string; children: 
 
 function ErrorDrill({
   portalRef,
+  fallbackRef,
   range,
   onClose,
+  ui,
 }: {
   portalRef: React.RefObject<HTMLButtonElement | null>;
+  fallbackRef: React.RefObject<HTMLButtonElement | null>;
   range: string;
   onClose: () => void;
+  ui: WorkbenchUi;
 }): ReactElement {
   const drillRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -227,41 +247,66 @@ function ErrorDrill({
   const [sections, setSections] = useState<GErrSection[]>([]);
   const [selFp, setSelFp] = useState<string | null>(null);
   const [detail, setDetail] = useState<GErrDetail | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [savingStatus, setSavingStatus] = useState<boolean>(false);
   const [tab, setTab] = useState<"trend" | "trace" | "occ">("trace");
   const [variant, setVariant] = useState<number>(0);
+  const listReadRef = useRef<AbortController | null>(null);
+  const statusReadRef = useRef<AbortController | null>(null);
 
   const loadList = useCallback(async () => {
-    const [ov, list] = await Promise.all([
-      api<GErrOverview>(`/api/dashboard/observe/global_errors/overview?range=${range}`),
-      api<GErrListResp>(`/api/dashboard/observe/global_errors?range=${range}&facet=${facet}&q=${encodeURIComponent(q)}`),
-    ]);
-    setOverview(ov);
-    setSections(list.sections ?? []);
-    const flat = (list.sections ?? []).flatMap((s) => s.items);
-    setSelFp((cur) => (cur && flat.some((i) => i.fingerprint === cur) ? cur : flat[0]?.fingerprint ?? null));
+    listReadRef.current?.abort();
+    const controller = new AbortController();
+    listReadRef.current = controller;
+    setListError(null);
+    try {
+      const [ov, list] = await Promise.all([
+        api<GErrOverview>(`/api/dashboard/observe/global_errors/overview?range=${range}`, { signal: controller.signal }),
+        api<GErrListResp>(`/api/dashboard/observe/global_errors?range=${range}&facet=${facet}&q=${encodeURIComponent(q)}`, { signal: controller.signal }),
+      ]);
+      if (controller.signal.aborted) return;
+      setOverview(ov);
+      setSections(list.sections ?? []);
+      const flat = (list.sections ?? []).flatMap((s) => s.items);
+      setSelFp((cur) => (cur && flat.some((i) => i.fingerprint === cur) ? cur : flat[0]?.fingerprint ?? null));
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setListError(error instanceof Error ? error.message : "错误列表读取失败");
+      }
+    } finally {
+      if (listReadRef.current === controller) listReadRef.current = null;
+    }
   }, [range, facet, q]);
 
   useEffect(() => {
     void loadList();
+    return () => listReadRef.current?.abort();
   }, [loadList]);
 
   useEffect(() => {
     if (!selFp) {
       setDetail(null);
+      setDetailError(null);
       return;
     }
-    let alive = true;
-    void (async () => {
-      const d = await api<GErrDetail>(`/api/dashboard/observe/global_errors/${selFp}?range=${range}`);
-      if (alive) {
+    const controller = new AbortController();
+    setDetailError(null);
+    void api<GErrDetail>(
+      `/api/dashboard/observe/global_errors/${selFp}?range=${range}`,
+      { signal: controller.signal },
+    ).then((d) => {
+      if (!controller.signal.aborted) {
         setDetail(d);
         setVariant(0);
         setTab("trace");
       }
-    })();
-    return () => {
-      alive = false;
-    };
+    }, (error: unknown) => {
+      if (!controller.signal.aborted) {
+        setDetailError(error instanceof Error ? error.message : "错误详情读取失败");
+      }
+    });
+    return () => controller.abort();
   }, [selFp, range]);
 
   const close = useCallback(() => {
@@ -270,8 +315,11 @@ function ErrorDrill({
 
   useEffect(() => {
     closeButtonRef.current?.focus();
-    return () => portalRef.current?.focus();
-  }, [portalRef]);
+    return () => {
+      statusReadRef.current?.abort();
+      (portalRef.current ?? fallbackRef.current)?.focus();
+    };
+  }, [fallbackRef, portalRef]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -298,10 +346,29 @@ function ErrorDrill({
   }, [close]);
 
   const setStatus = async (status: string): Promise<void> => {
-    if (!detail) return;
-    await api(`/api/dashboard/observe/global_errors/${detail.fingerprint}/status?value=${status}`, { method: "POST" });
-    await loadList();
-    setDetail((d) => (d ? { ...d, status } : d));
+    if (!detail || statusReadRef.current) return;
+    const fingerprint = detail.fingerprint;
+    const controller = new AbortController();
+    statusReadRef.current = controller;
+    setSavingStatus(true);
+    setDetailError(null);
+    try {
+      await api(
+        `/api/dashboard/observe/global_errors/${fingerprint}/status?value=${status}`,
+        { method: "POST", signal: controller.signal },
+      );
+      if (controller.signal.aborted) return;
+      setDetail((d) => (d?.fingerprint === fingerprint ? { ...d, status } : d));
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setDetailError(error instanceof Error ? error.message : "错误状态更新失败");
+      }
+    } finally {
+      if (statusReadRef.current === controller) {
+        statusReadRef.current = null;
+        if (!controller.signal.aborted) setSavingStatus(false);
+      }
+    }
   };
 
   const gotoSession = (key: string): void => {
@@ -380,6 +447,7 @@ function ErrorDrill({
         {/* 左群组 / 右详情 */}
         <div className="grid min-h-0 flex-1 grid-cols-[340px_1fr]">
           <div className="overflow-auto border-r border-border p-1.5">
+            {listError && <div className="p-4 text-[12px] text-danger" role="alert">{listError}</div>}
             {sections.map((section) => (
               <div key={section.key}>
                 {section.label && (
@@ -389,22 +457,26 @@ function ErrorDrill({
                   </div>
                 )}
                 {section.items.map((g) => (
-                  <ErrorRow key={g.fingerprint} g={g} active={g.fingerprint === selFp} onClick={() => setSelFp(g.fingerprint)} />
+                  <ErrorRow key={g.fingerprint} g={g} active={g.fingerprint === selFp} onClick={() => setSelFp(g.fingerprint)} ui={ui} />
                 ))}
               </div>
             ))}
-            {sections.length === 0 && <div className="p-6 text-[12.5px] text-muted">所选区间内没有错误。</div>}
+            {!listError && sections.length === 0 && <div className="p-6 text-[12.5px] text-muted">所选区间内没有错误。</div>}
           </div>
 
-          {detail ? (
+          {detailError ? (
+            <div className="grid place-items-center p-6 text-[13px] text-danger" role="alert">{detailError}</div>
+          ) : detail ? (
             <ErrorDetail
               detail={detail}
               tab={tab}
               setTab={setTab}
               variant={variant}
               setVariant={setVariant}
+              savingStatus={savingStatus}
               onStatus={setStatus}
               onGoto={gotoSession}
+              ui={ui}
             />
           ) : (
             <div className="grid place-items-center text-[13px] text-muted">选择左侧一个错误查看现场</div>
@@ -415,9 +487,20 @@ function ErrorDrill({
   );
 }
 
-function ErrorRow({ g, active, onClick }: { g: GErrGroup; active: boolean; onClick: () => void }): ReactElement {
+function ErrorRow({
+  g,
+  active,
+  onClick,
+  ui,
+}: {
+  g: GErrGroup;
+  active: boolean;
+  onClick: () => void;
+  ui: WorkbenchUi;
+}): ReactElement {
   const tone = _severity(g.count, g.is_spiking);
   const spark = g.spark ?? [];
+  const Sparkline = ui.Sparkline;
   return (
     <button
       type="button"
@@ -453,20 +536,25 @@ function ErrorDetail({
   setTab,
   variant,
   setVariant,
+  savingStatus,
   onStatus,
   onGoto,
+  ui,
 }: {
   detail: GErrDetail;
   tab: "trend" | "trace" | "occ";
   setTab: (t: "trend" | "trace" | "occ") => void;
   variant: number;
   setVariant: (n: number) => void;
+  savingStatus: boolean;
   onStatus: (s: string) => void;
   onGoto: (key: string) => void;
+  ui: WorkbenchUi;
 }): ReactElement {
   const status = STATUS_META[detail.status] ?? STATUS_META.active;
   const tone = _severity(detail.count, false);
   const activeVariant = detail.variants[variant] ?? detail.variants[0];
+  const { Chip, TrendChart } = ui;
   return (
     <div className="flex min-h-0 flex-col">
       {/* hero */}
@@ -571,10 +659,10 @@ function ErrorDetail({
           复制 Traceback
         </button>
         <div className="flex-1" />
-        <button type="button" onClick={() => onStatus("acknowledged")} className="rounded border border-border-strong bg-surface-2 px-3 py-2 text-[11px] text-muted transition-colors hover:text-fg">
+        <button type="button" disabled={savingStatus} onClick={() => onStatus("acknowledged")} className="rounded border border-border-strong bg-surface-2 px-3 py-2 text-[11px] text-muted transition-colors hover:text-fg disabled:opacity-40">
           标记已确认
         </button>
-        <button type="button" onClick={() => onStatus("ignored")} className="rounded border border-border-strong bg-surface-2 px-3 py-2 text-[11px] text-muted transition-colors hover:border-danger/40 hover:text-danger">
+        <button type="button" disabled={savingStatus} onClick={() => onStatus("ignored")} className="rounded border border-border-strong bg-surface-2 px-3 py-2 text-[11px] text-muted transition-colors hover:border-danger/40 hover:text-danger disabled:opacity-40">
           忽略此类型
         </button>
       </div>
@@ -633,7 +721,8 @@ function ObserveSkeleton(): ReactElement {
 // ── 监测主面板 ────────────────────────────────────────────────────────────────
 
 // Grafana-style monitoring overview over observe.db agent-loop telemetry.
-function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
+function ObserveMain({ dispatch }: { dispatch: WorkbenchDispatch }): ReactElement {
+  const { Grid, MetricTile, TrendChart } = dispatch.ui;
   const [range, setRange] = useState<string>("24h");
   const [overview, setOverview] = useState<Overview | null>(null);
   const [points, setPoints] = useState<SeriesPoint[]>([]);
@@ -642,23 +731,38 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
   const [updatedAt, setUpdatedAt] = useState<number>(0);
   const [nowTs, setNowTs] = useState<number>(() => Date.now());
   const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
   const portalRef = useRef<HTMLButtonElement>(null);
+  const refreshRef = useRef<HTMLButtonElement>(null);
   const overviewRef = useRef<HTMLDivElement>(null);
+  const mainReadRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
+    mainReadRef.current?.abort();
+    const controller = new AbortController();
+    mainReadRef.current = controller;
     setRefreshing(true);
+    setError(null);
     try {
       const [ov, series, ge] = await Promise.all([
-        api<Overview>(`/api/dashboard/observe/overview?range=${range}`),
-        api<{ points: SeriesPoint[] }>(`/api/dashboard/observe/timeseries?range=${range}`),
-        api<GErrOverview>(`/api/dashboard/observe/global_errors/overview?range=${range}`),
+        api<Overview>(`/api/dashboard/observe/overview?range=${range}`, { signal: controller.signal }),
+        api<{ points: SeriesPoint[] }>(`/api/dashboard/observe/timeseries?range=${range}`, { signal: controller.signal }),
+        api<GErrOverview>(`/api/dashboard/observe/global_errors/overview?range=${range}`, { signal: controller.signal }),
       ]);
+      if (controller.signal.aborted) return;
       setOverview(ov);
       setPoints(series.points ?? []);
       setGErr(ge);
       setUpdatedAt(Date.now());
+    } catch (reason) {
+      if (!controller.signal.aborted) {
+        setError(reason instanceof Error ? reason.message : "监测数据读取失败");
+      }
     } finally {
-      setRefreshing(false);
+      if (mainReadRef.current === controller) {
+        mainReadRef.current = null;
+        if (!controller.signal.aborted) setRefreshing(false);
+      }
     }
   }, [range]);
 
@@ -666,8 +770,20 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
   useEffect(() => {
     void load();
     const id = window.setInterval(() => void load(), 15000);
-    return () => window.clearInterval(id);
+    return () => {
+      window.clearInterval(id);
+      mainReadRef.current?.abort();
+    };
   }, [load]);
+
+  useEffect(() => {
+    if (!refreshing || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const animation = refreshRef.current?.animate(
+      [{ transform: "rotate(0deg)" }, { transform: "rotate(360deg)" }],
+      { duration: 1000, iterations: Infinity },
+    );
+    return () => animation?.cancel();
+  }, [refreshing]);
 
   // 1s tick 驱动"更新于 Xs 前"的相对时间标签。
   useEffect(() => {
@@ -680,7 +796,9 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
   }, [drillOpen]);
 
   if (!overview) {
-    return <ObserveSkeleton />;
+    return error
+      ? <div className="grid min-h-full place-items-center p-6 text-danger" role="alert">{error}</div>
+      : <ObserveSkeleton />;
   }
 
   const turnSeries = points.map((p) => p.turns);
@@ -715,9 +833,10 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
           </div>
           <div className="flex items-center gap-2">
             <button
+              ref={refreshRef}
               type="button"
               onClick={() => void load()}
-              className={`grid h-10 w-10 place-items-center rounded-md border border-border bg-surface-2 text-muted transition-colors hover:border-border-strong hover:text-fg ${refreshing ? "animate-spin" : ""}`}
+              className="grid h-10 w-10 place-items-center rounded-md border border-border bg-surface-2 text-muted transition-colors hover:border-border-strong hover:text-fg"
               aria-label="刷新监测数据"
               title="刷新"
             >
@@ -738,6 +857,8 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
             </div>
           </div>
         </div>
+
+        {error && <div className="border border-danger/40 bg-danger/10 px-4 py-3 text-[12px] text-danger" role="alert">{error}</div>}
 
         <section
           className={`flex min-h-16 items-center justify-between gap-4 border px-4 py-3 ${gErrTotal > 0 ? "border-danger/40 bg-danger/10" : "border-success/35 bg-success/10"}`}
@@ -804,15 +925,16 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
         </details>
       </div>
 
-      {drillOpen && <ErrorDrill portalRef={portalRef} range={range} onClose={() => setDrillOpen(false)} />}
+      {drillOpen && <ErrorDrill portalRef={portalRef} fallbackRef={refreshRef} range={range} onClose={() => setDrillOpen(false)} ui={dispatch.ui} />}
     </>
   );
 }
 
-window.AkashicDashboard.registerPlugin({
+const panel = {
   id: "observe",
   label: "运行监测",
   viewLabel: "运行监测",
+  order: 60,
   layout: "workbench",
   pageSize: 30,
   rowKey: "id",
@@ -827,21 +949,36 @@ window.AkashicDashboard.registerPlugin({
     { key: "error", label: "错误", flex: true, cellClass: "content-preview" },
   ],
 
-  async getCount(): Promise<number | null> {
+  async getCount({ signal }: { signal: AbortSignal }): Promise<number | null> {
     try {
-      const ov = await api<Overview>("/api/dashboard/observe/overview?range=all");
+      const ov = await api<Overview>("/api/dashboard/observe/overview?range=all", { signal });
       return ov.turns || 0;
-    } catch {
+    } catch (error) {
+      if (signal.aborted) throw error;
       return null;
     }
   },
 
-  async fetchPage({ page, pageSize }: { page: number; pageSize: number }) {
+  async fetchPage({ page, pageSize, signal }: { page: number; pageSize: number; signal: AbortSignal }) {
     const data = await api<{ items: Record<string, unknown>[]; total: number }>(
       `/api/dashboard/observe/errors?range=all&page=${page}&page_size=${pageSize}`,
+      { signal },
     );
     return { items: data.items || [], total: data.total || 0 };
   },
 
-  Main: ObserveMain,
-});
+  renderMain(container: HTMLElement, dispatch: WorkbenchDispatch): WebUiDisposer {
+    const root = createRoot(container);
+    root.render(<ObserveMain dispatch={dispatch} />);
+    return () => root.unmount();
+  },
+} satisfies WorkbenchPanelEntry;
+
+export function activate(ctx: WebHostContextV1): WebUiDisposer {
+  dashboardRequest = ctx.http.request;
+  const release = ctx.ui.inject("workbench.panels.v2", (mount) => mount.register(panel));
+  return () => {
+    release();
+    dashboardRequest = null;
+  };
+}

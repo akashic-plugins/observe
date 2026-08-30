@@ -109,6 +109,7 @@ async def _mount_observe(tmp_path: Path) -> tuple[CompositionRoot, Path]:
         inject=module.inject,
         runtime=PluginRuntime(
             plugin_id="observe",
+            generation_id=root.generation_id,
             plugin_dir=plugin_dir,
             data_dir=tmp_path / "plugin-data",
             workspace=workspace,
@@ -587,7 +588,7 @@ def test_static_manifest_and_module_exports_match() -> None:
     manifest = load_static_plugin_manifest(plugin_dir)
     composable = ComposablePlugin.from_module(module)
     assert manifest.name == composable.name == "observe"
-    assert manifest.version == composable.version == "1.4.0"
+    assert manifest.version == composable.version == "1.4.1"
     assert manifest.api_version == composable.api_version == 3
     assert manifest.entrypoint == "plugin.py"
     assert composable.dashboard_module == "dashboard.py"
