@@ -6,9 +6,14 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import { Grid, MetricTile, TrendChart, Sparkline, Chip, type ChartTone } from "@akashic/dashboard-ui";
+import { createRoot } from "react-dom/client";
 import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
-import type { WorkbenchPanelEntry } from "@akashic/workbench-ui-v2";
+import type {
+  ChartTone,
+  WorkbenchDispatch,
+  WorkbenchPanelEntry,
+  WorkbenchUi,
+} from "@akashic/workbench-ui-v2";
 
 let dashboardRequest: WebHostContextV1["http"]["request"] | null = null;
 
@@ -226,11 +231,13 @@ function ErrorDrill({
   fallbackRef,
   range,
   onClose,
+  ui,
 }: {
   portalRef: React.RefObject<HTMLButtonElement | null>;
   fallbackRef: React.RefObject<HTMLButtonElement | null>;
   range: string;
   onClose: () => void;
+  ui: WorkbenchUi;
 }): ReactElement {
   const drillRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -450,7 +457,7 @@ function ErrorDrill({
                   </div>
                 )}
                 {section.items.map((g) => (
-                  <ErrorRow key={g.fingerprint} g={g} active={g.fingerprint === selFp} onClick={() => setSelFp(g.fingerprint)} />
+                  <ErrorRow key={g.fingerprint} g={g} active={g.fingerprint === selFp} onClick={() => setSelFp(g.fingerprint)} ui={ui} />
                 ))}
               </div>
             ))}
@@ -469,6 +476,7 @@ function ErrorDrill({
               savingStatus={savingStatus}
               onStatus={setStatus}
               onGoto={gotoSession}
+              ui={ui}
             />
           ) : (
             <div className="grid place-items-center text-[13px] text-muted">选择左侧一个错误查看现场</div>
@@ -479,9 +487,20 @@ function ErrorDrill({
   );
 }
 
-function ErrorRow({ g, active, onClick }: { g: GErrGroup; active: boolean; onClick: () => void }): ReactElement {
+function ErrorRow({
+  g,
+  active,
+  onClick,
+  ui,
+}: {
+  g: GErrGroup;
+  active: boolean;
+  onClick: () => void;
+  ui: WorkbenchUi;
+}): ReactElement {
   const tone = _severity(g.count, g.is_spiking);
   const spark = g.spark ?? [];
+  const Sparkline = ui.Sparkline;
   return (
     <button
       type="button"
@@ -520,6 +539,7 @@ function ErrorDetail({
   savingStatus,
   onStatus,
   onGoto,
+  ui,
 }: {
   detail: GErrDetail;
   tab: "trend" | "trace" | "occ";
@@ -529,10 +549,12 @@ function ErrorDetail({
   savingStatus: boolean;
   onStatus: (s: string) => void;
   onGoto: (key: string) => void;
+  ui: WorkbenchUi;
 }): ReactElement {
   const status = STATUS_META[detail.status] ?? STATUS_META.active;
   const tone = _severity(detail.count, false);
   const activeVariant = detail.variants[variant] ?? detail.variants[0];
+  const { Chip, TrendChart } = ui;
   return (
     <div className="flex min-h-0 flex-col">
       {/* hero */}
@@ -699,7 +721,8 @@ function ObserveSkeleton(): ReactElement {
 // ── 监测主面板 ────────────────────────────────────────────────────────────────
 
 // Grafana-style monitoring overview over observe.db agent-loop telemetry.
-function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
+function ObserveMain({ dispatch }: { dispatch: WorkbenchDispatch }): ReactElement {
+  const { Grid, MetricTile, TrendChart } = dispatch.ui;
   const [range, setRange] = useState<string>("24h");
   const [overview, setOverview] = useState<Overview | null>(null);
   const [points, setPoints] = useState<SeriesPoint[]>([]);
@@ -902,7 +925,7 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
         </details>
       </div>
 
-      {drillOpen && <ErrorDrill portalRef={portalRef} fallbackRef={refreshRef} range={range} onClose={() => setDrillOpen(false)} />}
+      {drillOpen && <ErrorDrill portalRef={portalRef} fallbackRef={refreshRef} range={range} onClose={() => setDrillOpen(false)} ui={dispatch.ui} />}
     </>
   );
 }
@@ -944,7 +967,11 @@ const panel = {
     return { items: data.items || [], total: data.total || 0 };
   },
 
-  Main: ObserveMain,
+  renderMain(container: HTMLElement, dispatch: WorkbenchDispatch): WebUiDisposer {
+    const root = createRoot(container);
+    root.render(<ObserveMain dispatch={dispatch} />);
+    return () => root.unmount();
+  },
 } satisfies WorkbenchPanelEntry;
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
