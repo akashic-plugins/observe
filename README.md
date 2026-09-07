@@ -13,6 +13,8 @@ Akashic 可观测性插件（Plugin API v3），负责投影已提交 Message、
 
 Observe DB 保留原有 `turns`、`rag_queries`、`memory_writes` 和 `global_errors` 历史。投影 receipt 使用 owner 的不可变 ID 防止重启重复写；未闭合 Turn 不推进 cursor，后来提交 Output 后仍会被投影。一次 Turn 引用的全部 `model.facts` 都计入用量，未产生 Message 的失败调用也保存在 `model_calls`。
 
+`rag_queries` 继续保留 90 天，独立 receipt 不随 trace 清理，因此全量重扫不会复活过期记录。`memory_writes` 与既有合同一致，不参与自动 retention。
+
 Message source `wake` 继续显示为 `proactive`，`drift` 显示为 `drift`，其余来源显示为 `agent`。原始模型输出和旧 context 临时统计不从 Message 反推；对应列保留，已有历史不改写。
 
 Dashboard 使用 `register(app, DashboardContext)`，只读取当前 generation 的声明式 workspace root。candidate 验证只写 Core 分配的临时 workspace，formal publish 后才继续写正式 `observe` workspace。

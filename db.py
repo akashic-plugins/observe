@@ -86,6 +86,13 @@ CREATE TABLE IF NOT EXISTS projection_cursors (
     PRIMARY KEY (domain, scope)
 );
 
+CREATE TABLE IF NOT EXISTS projection_receipts (
+    domain TEXT NOT NULL,
+    identity TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (domain, identity)
+);
+
 -- ─────────────────────────────────────────────
 -- 3. memory_writes  post-response 记忆写入记录
 -- ─────────────────────────────────────────────
@@ -218,6 +225,20 @@ def _ensure_memory_columns(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_projection_receipts(conn: sqlite3.Connection) -> None:
+    """把已投影的旧行登记成不随 retention 删除的消费事实。"""
+    conn.execute(
+        "INSERT OR IGNORE INTO projection_receipts "
+        "SELECT 'akasha', projection_key, ts FROM rag_queries "
+        "WHERE projection_key IS NOT NULL"
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO projection_receipts "
+        "SELECT 'markdown', projection_key, ts FROM memory_writes "
+        "WHERE projection_key IS NOT NULL"
+    )
+
+
 def _migrate_removed_proactive_observe(conn: sqlite3.Connection) -> None:
     _ = conn.execute("DROP TABLE IF EXISTS proactive_decisions")
 
@@ -287,6 +308,7 @@ def open_db(db_path: Path) -> sqlite3.Connection:
     _ensure_turns_columns(conn)
     _ensure_rag_columns(conn)
     _ensure_memory_columns(conn)
+    _ensure_projection_receipts(conn)
     _migrate_removed_proactive_observe(conn)
     _ensure_kv_cache_projection(conn)
     conn.commit()

@@ -77,6 +77,7 @@ from plugins.akasha.message_plugin import AKASHA_RECORDS_VIEW
 from plugins.akasha.recalls import Hit, ProgramSource, Recall
 from plugins.markdown_memory.store import MEMORY_WRITES
 from plugins.models.projection import MODEL_CALL_HISTORY, MODEL_CALLS
+from plugins.tools.plugin import TOOL_DISPLAY_NAME
 from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
 api_version = 3
 name = "owners"
@@ -106,6 +107,7 @@ async def apply(ctx, config):
  await ctx.provide(MODEL_CALL_HISTORY, lambda after, limit: tuple(CALLS[key] for key in sorted(CALLS) if key > after)[:limit])
  await ctx.provide(MEMORY_WRITES, lambda after, limit: tuple(row for row in WRITES if after is None or (row["source_ref"], row["kind"]) > after)[:limit])
  await ctx.provide(AKASHA_RECORDS_VIEW, lambda: EmptyRecalls())
+ await ctx.provide(TOOL_DISPLAY_NAME, lambda binding_id: {"tools.weather.v1": "weather"}[binding_id])
 """,
         encoding="utf-8",
     )
@@ -246,6 +248,10 @@ async def test_real_manager_projects_histories_and_restart_is_idempotent(
                 "SELECT assistant_message_id,user_msg,llm_output,meme_tag,meme_media_count,react_iteration_count,model_output_tokens,react_cache_prompt_tokens,react_cache_hit_tokens FROM turns"
             ).fetchone()
             assert row == ("output-2", "你好", "今天晴", "happy", 1, 2, 50, 220, 170)
+            assert (
+                '"name": "weather"'
+                in connection.execute("SELECT tool_chain_json FROM turns").fetchone()[0]
+            )
             assert connection.execute(
                 "SELECT state,failure FROM model_calls WHERE call_id='call-failed'"
             ).fetchone() == ("unknown", "provider timeout")
@@ -378,6 +384,124 @@ def test_existing_turn_gets_projection_receipt_without_duplicate(
         ).fetchone() == ("s\nconversation", 3)
     finally:
         connection.close()
+
+
+def _model_trace(identity: str):
+    events = sys.modules[f"{module.__name__}.events"]
+    return events.ModelCallTrace(
+        call_id=identity,
+        state="success",
+        model="test-model",
+        started_at="2026-09-08 00:00:00",
+        finished_at="2026-09-08 00:00:01",
+        first_token_ms=1.0,
+        duration_ms=2.0,
+        usage=None,
+        failure=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_durable_submit_does_not_drop_more_than_queue_capacity(
+    tmp_path: Path,
+) -> None:
+    writer_type = sys.modules[f"{module.__name__}.writer"].TraceWriter
+    writer = writer_type(tmp_path / "observe.db")
+    task = asyncio.create_task(writer.run())
+    try:
+        await asyncio.gather(
+            *(writer.submit(_model_trace(f"call-{index:04d}")) for index in range(600))
+        )
+        with sqlite3.connect(tmp_path / "observe.db") as connection:
+            assert (
+                connection.execute("SELECT COUNT(*) FROM model_calls").fetchone()[0]
+                == 600
+            )
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_durable_submit_reports_one_write_failure_then_recovers(
+    tmp_path: Path,
+) -> None:
+    writer_type = sys.modules[f"{module.__name__}.writer"].TraceWriter
+    writer = writer_type(tmp_path / "observe.db")
+    write = writer._write_one
+    attempts = 0
+
+    def fail_once(connection, event):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise sqlite3.OperationalError("injected write failure")
+        write(connection, event)
+
+    writer._write_one = fail_once
+    task = asyncio.create_task(writer.run())
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="injected"):
+            await writer.submit(_model_trace("call-retry"))
+        await writer.submit(_model_trace("call-retry"))
+        assert not task.done()
+        with sqlite3.connect(tmp_path / "observe.db") as connection:
+            assert (
+                connection.execute("SELECT COUNT(*) FROM model_calls").fetchone()[0]
+                == 1
+            )
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_rag_retention_keeps_receipt_and_does_not_resurrect(
+    tmp_path: Path,
+) -> None:
+    events = sys.modules[f"{module.__name__}.events"]
+    writer_type = sys.modules[f"{module.__name__}.writer"].TraceWriter
+    retention = sys.modules[f"{module.__name__}.retention"]
+    db_path = tmp_path / "observe.db"
+    writer = writer_type(db_path)
+    task = asyncio.create_task(writer.run())
+    event = events.RagQueryLog(
+        caller="explicit",
+        session_key="s",
+        query="old",
+        orig_query=None,
+        aux_queries=[],
+        hits=[],
+        injected_count=0,
+        projection_key="akasha:old",
+        recorded_at="2020-01-01T00:00:00+00:00",
+    )
+    try:
+        await writer.submit(event)
+        with sqlite3.connect(db_path) as connection:
+            connection.execute("DELETE FROM projection_receipts")
+            connection.commit()
+        reopened = sys.modules[f"{module.__name__}.db"].open_db(db_path)
+        reopened.close()
+        await asyncio.to_thread(retention._run_cleanup, db_path)
+        await writer.submit(event)
+        with sqlite3.connect(db_path) as connection:
+            assert (
+                connection.execute("SELECT COUNT(*) FROM rag_queries").fetchone()[0]
+                == 0
+            )
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM projection_receipts WHERE domain='akasha'"
+                ).fetchone()[0]
+                == 1
+            )
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
 
 @pytest.mark.asyncio

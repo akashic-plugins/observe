@@ -27,6 +27,11 @@ _QUEUE_MAX = 500
 _ARG_MAX = 300
 _RESULT_MAX = 500
 
+type TraceEvent = (
+    TurnTrace | RagQueryLog | MemoryWriteTrace | ModelCallTrace | GlobalErrorTrace
+)
+type QueueItem = tuple[TraceEvent, asyncio.Future[None] | None]
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -49,13 +54,7 @@ def _serialize_tool_calls(tool_calls: list[dict]) -> str | None:
 class TraceWriter:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
-        self._queue: asyncio.Queue[
-            TurnTrace
-            | RagQueryLog
-            | MemoryWriteTrace
-            | ModelCallTrace
-            | GlobalErrorTrace
-        ] = asyncio.Queue(maxsize=_QUEUE_MAX)
+        self._queue: asyncio.Queue[QueueItem] = asyncio.Queue(maxsize=_QUEUE_MAX)
         self._dropped = 0
 
     # ── 公共接口 ─────────────────────────────────
@@ -72,11 +71,17 @@ class TraceWriter:
     ) -> None:
         """非阻塞 emit。Queue 满时 drop 并记录计数。"""
         try:
-            self._queue.put_nowait(event)
+            self._queue.put_nowait((event, None))
         except asyncio.QueueFull:
             self._dropped += 1
             if self._dropped % 100 == 1:
                 logger.warning("observe queue full, total_dropped=%d", self._dropped)
+
+    async def submit(self, event: TraceEvent) -> None:
+        """为耐久投影提供背压和事务完成确认。"""
+        done = asyncio.get_running_loop().create_future()
+        await self._queue.put((event, done))
+        await done
 
     async def drain(self) -> None:
         """等待已入队事件写入完成。"""
@@ -88,30 +93,38 @@ class TraceWriter:
         logger.info("observe writer started: %s", self._db_path)
         try:
             while True:
-                event = await self._queue.get()
+                event, done = await self._queue.get()
                 try:
                     self._write_one(conn, event)
-                except Exception:
+                except Exception as error:
                     logger.exception(
                         "observe write failed for %s", type(event).__name__
                     )
-                    raise
+                    if done is not None and not done.done():
+                        done.set_exception(error)
+                else:
+                    if done is not None and not done.done():
+                        done.set_result(None)
                 finally:
                     self._queue.task_done()
         finally:
             # flush remaining on shutdown
             while not self._queue.empty():
                 try:
-                    e = self._queue.get_nowait()
+                    e, done = self._queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
                 try:
                     self._write_one(conn, e)
-                except Exception:
+                except Exception as error:
                     logger.exception(
                         "observe shutdown flush failed for %s", type(e).__name__
                     )
-                    raise
+                    if done is not None and not done.done():
+                        done.set_exception(error)
+                else:
+                    if done is not None and not done.done():
+                        done.set_result(None)
                 finally:
                     self._queue.task_done()
             conn.close()
@@ -306,6 +319,10 @@ def _write_rag(conn, e: RagQueryLog, ts: str) -> None:
         else None
     )
     with conn:
+        if e.projection_key is not None and _has_receipt(
+            conn, "akasha", e.projection_key
+        ):
+            return
         conn.execute(
             """
             INSERT INTO rag_queries (
@@ -333,6 +350,7 @@ def _write_rag(conn, e: RagQueryLog, ts: str) -> None:
                 e.projection_key,
             ),
         )
+        _record_receipt(conn, "akasha", e.projection_key, ts)
 
 
 _SESSION_KEYS_CAP = 20
@@ -416,6 +434,10 @@ def _write_memory_write(conn, e: MemoryWriteTrace, ts: str) -> None:
 
     ts = e.recorded_at or ts
     with conn:
+        if e.projection_key is not None and _has_receipt(
+            conn, "markdown", e.projection_key
+        ):
+            return
         conn.execute(
             """
             INSERT INTO memory_writes (
@@ -442,6 +464,27 @@ def _write_memory_write(conn, e: MemoryWriteTrace, ts: str) -> None:
                 e.projection_key,
             ),
         )
+        _record_receipt(conn, "markdown", e.projection_key, ts)
+
+
+def _has_receipt(conn, domain: str, identity: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM projection_receipts WHERE domain=? AND identity=?",
+            (domain, identity),
+        ).fetchone()
+        is not None
+    )
+
+
+def _record_receipt(conn, domain: str, identity: str | None, recorded_at: str) -> None:
+    if identity is None:
+        return
+    conn.execute(
+        "INSERT INTO projection_receipts(domain, identity, recorded_at) "
+        "VALUES (?, ?, ?)",
+        (domain, identity, recorded_at),
+    )
 
 
 def _write_model_call(conn, event: ModelCallTrace) -> None:

@@ -97,6 +97,13 @@ CREATE TABLE IF NOT EXISTS projection_cursors (
     PRIMARY KEY (domain, scope)
 );
 
+CREATE TABLE IF NOT EXISTS projection_receipts (
+    domain TEXT NOT NULL,
+    identity TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (domain, identity)
+);
+
 -- ─────────────────────────────────────────────
 -- 3. memory_writes  post-response 记忆写入记录
 -- ─────────────────────────────────────────────

@@ -98,7 +98,11 @@ def _usage(
     return total("output_tokens"), total("input_tokens"), total("cached_input_tokens")
 
 
-def _tool_chain(messages: Mapping[str, Message], turn: Turn) -> list[dict[str, object]]:
+def _tool_chain(
+    messages: Mapping[str, Message],
+    turn: Turn,
+    tool_name: Callable[[str], str],
+) -> list[dict[str, object]]:
     results = {
         call_ref: messages[result_id] for call_ref, result_id in turn.observations
     }
@@ -114,7 +118,7 @@ def _tool_chain(messages: Mapping[str, Message], turn: Turn) -> list[dict[str, o
             result = results.get(CallRef(identity, index))
             calls.append(
                 {
-                    "name": part.binding_id,
+                    "name": tool_name(part.binding_id),
                     "arguments": dict(part.arguments),
                     "result": None if result is None else _texts(result),
                     "outcome": (
@@ -134,6 +138,7 @@ def _turn_trace(
     turn: Turn,
     by_id: Mapping[str, Message],
     read_call: Callable[[str], Mapping[str, Any]],
+    tool_name: Callable[[str], str],
 ) -> TurnTrace:
     members = [by_id[identity] for identity in turn.message_ids]
     inputs = [message for message in members if isinstance(message.body, Input)]
@@ -142,7 +147,7 @@ def _turn_trace(
     final_body = None if final is None else cast(Output, final.body)
     calls = _call_ids(by_id, turn)
     output_tokens, prompt_tokens, cache_hits = _usage(calls, read_call)
-    chain = _tool_chain(by_id, turn)
+    chain = _tool_chain(by_id, turn, tool_name)
     meme = {} if final is None else final.metadata.get("meme", {})
     meme = meme if isinstance(meme, Mapping) else {}
     media = 0
@@ -190,6 +195,7 @@ async def project_messages(
     catalog: MessageCatalog,
     projection: TurnProjection,
     read_call: Callable[[str], Mapping[str, Any]],
+    tool_name: Callable[[str], str],
     writer: TraceWriter,
     db_path: Path,
     *,
@@ -206,8 +212,9 @@ async def project_messages(
             for turn in projection.project(messages, source):
                 if turn.status == "open" or turn.through_seq <= after:
                     continue
-                writer.emit(_turn_trace(session_id, turn, by_id, read_call))
-    await writer.drain()
+                await writer.submit(
+                    _turn_trace(session_id, turn, by_id, read_call, tool_name)
+                )
 
 
 async def project_model_calls(
@@ -222,7 +229,7 @@ async def project_model_calls(
             model = binding.get("model") if isinstance(binding, Mapping) else None
             if not isinstance(model, str) or not model:
                 raise ValueError("模型调用缺少 model")
-            writer.emit(
+            await writer.submit(
                 ModelCallTrace(
                     call_id=cast(str, record["id"]),
                     state=cast(str, record["state"]),
@@ -239,7 +246,6 @@ async def project_model_calls(
                     failure=cast(str | None, record["failure"]),
                 )
             )
-        await writer.drain()
         if len(page) < 250:
             break
         after = cast(str, page[-1]["id"])
@@ -268,10 +274,10 @@ async def project_memory_writes(
             cast(Mapping[str, object], row["payload"]).get("session_key"), str
         )
     }
-    for index, row in enumerate(rows, start=1):
+    for row in rows:
         source_ref, kind = cast(str, row["source_ref"]), cast(str, row["kind"])
         payload = row.get("payload")
-        writer.emit(
+        await writer.submit(
             MemoryWriteTrace(
                 session_key=sessions.get(source_ref, ""),
                 source_ref=source_ref,
@@ -282,9 +288,6 @@ async def project_memory_writes(
                 recorded_at=cast(str, row["done_at"]),
             )
         )
-        if index % 250 == 0:
-            await writer.drain()
-    await writer.drain()
 
 
 async def project_akasha(
@@ -292,7 +295,7 @@ async def project_akasha(
     catalog: MessageCatalog,
     writer: TraceWriter,
 ) -> None:
-    for index, (identity, recall) in enumerate(records.list(), start=1):
+    for identity, recall in records.list():
         hits: list[RagHitLog] = []
         for hit in recall.hits:
             for message_id in hit.message_ids:
@@ -312,7 +315,7 @@ async def project_akasha(
             if isinstance(source, ProgramSource)
             else f"{source.kind}:{identity}"
         )
-        writer.emit(
+        await writer.submit(
             RagQueryLog(
                 caller=("passive" if isinstance(source, ContextSource) else "explicit"),
                 session_key=(
@@ -328,9 +331,6 @@ async def project_akasha(
                 recorded_at=recall.timestamp.isoformat(),
             )
         )
-        if index % 250 == 0:
-            await writer.drain()
-    await writer.drain()
 
 
 async def run_projection(
@@ -338,6 +338,7 @@ async def run_projection(
     catalog: MessageCatalog,
     turns: TurnProjection,
     read_call: Callable[[str], Mapping[str, Any]],
+    tool_name: Callable[[str], str],
     model_history: Callable[[str, int], tuple[Mapping[str, Any], ...]],
     memory_history: Callable[
         [tuple[str, str] | None, int], tuple[dict[str, object], ...]
@@ -353,7 +354,13 @@ async def run_projection(
             heads = catalog.snapshot_heads()
             if heads != previous_heads:
                 await project_messages(
-                    catalog, turns, read_call, writer, db_path, heads=heads
+                    catalog,
+                    turns,
+                    read_call,
+                    tool_name,
+                    writer,
+                    db_path,
+                    heads=heads,
                 )
                 previous_heads = dict(heads)
             await project_model_calls(model_history, writer)

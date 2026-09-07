@@ -18,6 +18,7 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG
 from plugins.akasha.message_plugin import AKASHA_RECORDS_VIEW
 from plugins.markdown_memory.store import MEMORY_WRITES
 from plugins.models.projection import MODEL_CALL_HISTORY, MODEL_CALLS
+from plugins.tools.plugin import TOOL_DISPLAY_NAME
 from plugins.turn_projection.plugin import TURN_PROJECTION
 
 from .collector import GlobalErrorCollector
@@ -40,6 +41,7 @@ inject = (
     MODEL_CALL_HISTORY,
     AKASHA_RECORDS_VIEW,
     MEMORY_WRITES,
+    TOOL_DISPLAY_NAME,
 )
 workspace_roots = ("observe",)
 dashboard_module = "dashboard.py"
@@ -88,6 +90,7 @@ async def apply(ctx: Context, config: object) -> None:
                 catalog=ctx.require(MESSAGE_CATALOG),
                 turns=ctx.require(TURN_PROJECTION),
                 read_call=ctx.require(MODEL_CALLS),
+                tool_name=ctx.require(TOOL_DISPLAY_NAME),
                 model_history=ctx.require(MODEL_CALL_HISTORY),
                 memory_history=ctx.require(MEMORY_WRITES),
                 akasha_records=ctx.require(AKASHA_RECORDS_VIEW),
