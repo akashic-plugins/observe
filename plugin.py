@@ -87,6 +87,7 @@ async def apply(ctx: Context, config: object) -> None:
         nonlocal projection_task
         projection_task = await ctx.spawn(
             run_projection(
+                runtime_scope=ctx.runtime_scope,
                 catalog=ctx.require(MESSAGE_CATALOG),
                 turns=ctx.require(TURN_PROJECTION),
                 read_call=ctx.require(MODEL_CALLS),

@@ -7,6 +7,7 @@ import json
 import logging
 import sqlite3
 from collections.abc import Callable, Mapping
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any, cast
 
@@ -335,6 +336,7 @@ async def project_akasha(
 
 async def run_projection(
     *,
+    runtime_scope: Callable[[], AbstractAsyncContextManager[None]],
     catalog: MessageCatalog,
     turns: TurnProjection,
     read_call: Callable[[str], Mapping[str, Any]],
@@ -351,21 +353,23 @@ async def run_projection(
     previous_heads: Mapping[str, int] | None = None
     while True:
         try:
-            heads = catalog.snapshot_heads()
-            if heads != previous_heads:
-                await project_messages(
-                    catalog,
-                    turns,
-                    read_call,
-                    tool_name,
-                    writer,
-                    db_path,
-                    heads=heads,
-                )
-                previous_heads = dict(heads)
-            await project_model_calls(model_history, writer)
-            await project_memory_writes(memory_history, writer)
-            await project_akasha(akasha_records(), catalog, writer)
+            # 每轮单独取得正式 scope；后台 task 不能借用启动回调的授权。
+            async with runtime_scope():
+                heads = catalog.snapshot_heads()
+                if heads != previous_heads:
+                    await project_messages(
+                        catalog,
+                        turns,
+                        read_call,
+                        tool_name,
+                        writer,
+                        db_path,
+                        heads=heads,
+                    )
+                    previous_heads = dict(heads)
+                await project_model_calls(model_history, writer)
+                await project_memory_writes(memory_history, writer)
+                await project_akasha(akasha_records(), catalog, writer)
         except asyncio.CancelledError:
             raise
         except Exception:

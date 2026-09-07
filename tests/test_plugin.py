@@ -73,8 +73,10 @@ def _write_owner_plugin(root: Path) -> None:
     (owner / "plugin.py").write_text(
         """
 from datetime import datetime, timezone
+from agent.plugin_composition import RUNTIME_STARTED
+from agent.plugin_composition.messages import OWNER_STATE
 from plugins.akasha.message_plugin import AKASHA_RECORDS_VIEW
-from plugins.akasha.recalls import Hit, ProgramSource, Recall
+from plugins.akasha.recalls import Hit, ProgramSource, Recall, RecallRecords, RecallRecordsRead
 from plugins.markdown_memory.store import MEMORY_WRITES
 from plugins.models.projection import MODEL_CALL_HISTORY, MODEL_CALLS
 from plugins.tools.plugin import TOOL_DISPLAY_NAME
@@ -92,21 +94,27 @@ WRITES = (
  {"source_ref":"summary-1","kind":"markdown_projection_order_v1","payload":{"session_key":"s","generation":1},"done_at":"2026-09-08 00:00:04"},
  {"source_ref":"summary-1","kind":"markdown_memory_applied_v1","payload":{"digest":"abc"},"done_at":"2026-09-08 00:00:05"},
 )
-class EmptyRecalls:
- def list(self):
-  return (("recall-1", Recall(
+RECALL = Recall(
    learning_binding="learning-1", graph_version=1,
    source=ProgramSource(key="manual", query="天气"),
    timestamp=datetime(2026, 9, 8, tzinfo=timezone.utc), limit=5,
    hits=(Hit(node_id=0, session_id="s", message_ids=("input-1",), score=0.8, lane="dense", sources=("direct_dense",)),),
    presented_message_ids=("input-1",), active_basin_count=0, pushes=0, residual_l1=0.0,
-  )),)
+  )
 async def apply(ctx, config):
+ def read_records():
+  return RecallRecordsRead(ctx.require(OWNER_STATE).open(ctx))
+ async def start(_event):
+  async with ctx.runtime_scope():
+   records = RecallRecords(ctx.require(OWNER_STATE).open(ctx))
+   if records.read("recall-1") is None:
+    records.save("recall-1", RECALL)
+ await ctx.on(RUNTIME_STARTED, start)
  await ctx.provide(TURN_PROJECTION, TurnProjection())
  await ctx.provide(MODEL_CALLS, lambda identity: CALLS[identity])
  await ctx.provide(MODEL_CALL_HISTORY, lambda after, limit: tuple(CALLS[key] for key in sorted(CALLS) if key > after)[:limit])
  await ctx.provide(MEMORY_WRITES, lambda after, limit: tuple(row for row in WRITES if after is None or (row["source_ref"], row["kind"]) > after)[:limit])
- await ctx.provide(AKASHA_RECORDS_VIEW, lambda: EmptyRecalls())
+ await ctx.provide(AKASHA_RECORDS_VIEW, read_records)
  await ctx.provide(TOOL_DISPLAY_NAME, lambda binding_id: {"tools.weather.v1": "weather"}[binding_id])
 """,
         encoding="utf-8",
