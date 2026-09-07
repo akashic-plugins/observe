@@ -13,7 +13,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .db import open_db
-from .events import GlobalErrorTrace, MemoryWriteTrace, RagQueryLog, TurnTrace
+from .events import (
+    GlobalErrorTrace,
+    MemoryWriteTrace,
+    ModelCallTrace,
+    RagQueryLog,
+    TurnTrace,
+)
 
 logger = logging.getLogger("observe.writer")
 
@@ -44,16 +50,25 @@ class TraceWriter:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._queue: asyncio.Queue[
-            TurnTrace | RagQueryLog | MemoryWriteTrace | GlobalErrorTrace
-        ] = asyncio.Queue(
-            maxsize=_QUEUE_MAX
-        )
+            TurnTrace
+            | RagQueryLog
+            | MemoryWriteTrace
+            | ModelCallTrace
+            | GlobalErrorTrace
+        ] = asyncio.Queue(maxsize=_QUEUE_MAX)
         self._dropped = 0
 
     # ── 公共接口 ─────────────────────────────────
 
     def emit(
-        self, event: TurnTrace | RagQueryLog | MemoryWriteTrace | GlobalErrorTrace
+        self,
+        event: (
+            TurnTrace
+            | RagQueryLog
+            | MemoryWriteTrace
+            | ModelCallTrace
+            | GlobalErrorTrace
+        ),
     ) -> None:
         """非阻塞 emit。Queue 满时 drop 并记录计数。"""
         try:
@@ -77,7 +92,9 @@ class TraceWriter:
                 try:
                     self._write_one(conn, event)
                 except Exception:
-                    logger.exception("observe write failed for %s", type(event).__name__)
+                    logger.exception(
+                        "observe write failed for %s", type(event).__name__
+                    )
                     raise
                 finally:
                     self._queue.task_done()
@@ -91,7 +108,9 @@ class TraceWriter:
                 try:
                     self._write_one(conn, e)
                 except Exception:
-                    logger.exception("observe shutdown flush failed for %s", type(e).__name__)
+                    logger.exception(
+                        "observe shutdown flush failed for %s", type(e).__name__
+                    )
                     raise
                 finally:
                     self._queue.task_done()
@@ -103,7 +122,13 @@ class TraceWriter:
     def _write_one(
         self,
         conn,
-        event: TurnTrace | RagQueryLog | MemoryWriteTrace | GlobalErrorTrace,
+        event: (
+            TurnTrace
+            | RagQueryLog
+            | MemoryWriteTrace
+            | ModelCallTrace
+            | GlobalErrorTrace
+        ),
     ) -> None:
         ts = _now_iso()
         if isinstance(event, TurnTrace):
@@ -112,6 +137,8 @@ class TraceWriter:
             _write_rag(conn, event, ts)
         elif isinstance(event, MemoryWriteTrace):
             _write_memory_write(conn, event, ts)
+        elif isinstance(event, ModelCallTrace):
+            _write_model_call(conn, event)
         elif isinstance(event, GlobalErrorTrace):
             _write_global_error(conn, event)
 
@@ -120,7 +147,23 @@ class TraceWriter:
 
 
 def _write_turn(conn, e: TurnTrace, ts: str) -> None:
+    ts = e.recorded_at or ts
     with conn:
+        if e.projection_key is not None and e.assistant_message_id is not None:
+            existing = conn.execute(
+                "SELECT projection_key FROM turns WHERE assistant_message_id=?",
+                (e.assistant_message_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing[0] not in (None, e.projection_key):
+                    raise RuntimeError("既有 Observe Turn 对应另一投影身份")
+                conn.execute(
+                    "UPDATE turns SET projection_key=? "
+                    "WHERE assistant_message_id=? AND projection_key IS NULL",
+                    (e.projection_key, e.assistant_message_id),
+                )
+                _advance_turn_cursor(conn, e)
+                return
         cursor = conn.execute(
             """
             INSERT INTO turns (
@@ -134,9 +177,10 @@ def _write_turn(conn, e: TurnTrace, ts: str) -> None:
                 react_input_peak_tokens, react_final_input_tokens,
                 model_output_tokens,
                 react_cache_prompt_tokens, react_cache_hit_tokens,
-                error
+                error, projection_key
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(projection_key) WHERE projection_key IS NOT NULL DO NOTHING
             """,
             (
                 ts,
@@ -165,8 +209,11 @@ def _write_turn(conn, e: TurnTrace, ts: str) -> None:
                 e.react_cache_prompt_tokens,
                 e.react_cache_hit_tokens,
                 e.error,
+                e.projection_key,
             ),
         )
+        if cursor.rowcount == 0:
+            return
         turn_id = int(cursor.lastrowid)
         tracked = e.react_cache_prompt_tokens is not None
         prompt_tokens = int(e.react_cache_prompt_tokens or 0)
@@ -211,9 +258,36 @@ def _write_turn(conn, e: TurnTrace, ts: str) -> None:
         )
         if state_update.rowcount != 1:
             raise RuntimeError("KV Cache 投影水位缺少 singleton 行")
+        _advance_turn_cursor(conn, e)
+
+
+def _advance_turn_cursor(conn, event: TurnTrace) -> None:
+    """与 Turn receipt 同事务推进已闭合前缀，open Turn 从不调用。"""
+    if event.projection_key is None:
+        return
+    if event.through_seq is None:
+        raise ValueError("Message Turn 投影缺少 through_seq")
+    conn.execute(
+        """
+        INSERT INTO projection_cursors(domain, scope, through_seq, ending_id)
+        VALUES ('turn', ?, ?, ?)
+        ON CONFLICT(domain, scope) DO UPDATE SET
+            through_seq=MAX(through_seq, excluded.through_seq),
+            ending_id=CASE
+                WHEN excluded.through_seq >= through_seq THEN excluded.ending_id
+                ELSE ending_id
+            END
+        """,
+        (
+            f"{event.session_key}\n{event.projection_source or event.source}",
+            event.through_seq,
+            event.assistant_message_id,
+        ),
+    )
 
 
 def _write_rag(conn, e: RagQueryLog, ts: str) -> None:
+    ts = e.recorded_at or ts
     hits_json = (
         json.dumps(
             [
@@ -236,8 +310,10 @@ def _write_rag(conn, e: RagQueryLog, ts: str) -> None:
             """
             INSERT INTO rag_queries (
                 ts, caller, session_key, query, orig_query,
-                aux_queries, hits_json, injected_count, route_decision, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                aux_queries, hits_json, injected_count, route_decision, error,
+                projection_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(projection_key) WHERE projection_key IS NOT NULL DO NOTHING
             """,
             (
                 ts,
@@ -245,11 +321,16 @@ def _write_rag(conn, e: RagQueryLog, ts: str) -> None:
                 e.session_key,
                 e.query,
                 e.orig_query,
-                json.dumps(e.aux_queries, ensure_ascii=False) if e.aux_queries else None,
+                (
+                    json.dumps(e.aux_queries, ensure_ascii=False)
+                    if e.aux_queries
+                    else None
+                ),
                 hits_json,
                 e.injected_count,
                 e.route_decision,
                 e.error,
+                e.projection_key,
             ),
         )
 
@@ -325,16 +406,24 @@ def _merge_session_keys(prev: list[str], new: list[str]) -> str | None:
             merged.append(key)
         if len(merged) >= _SESSION_KEYS_CAP:
             break
-    return json.dumps(merged[:_SESSION_KEYS_CAP], ensure_ascii=False) if merged else None
+    return (
+        json.dumps(merged[:_SESSION_KEYS_CAP], ensure_ascii=False) if merged else None
+    )
 
 
 def _write_memory_write(conn, e: MemoryWriteTrace, ts: str) -> None:
     import json as _json
+
+    ts = e.recorded_at or ts
     with conn:
         conn.execute(
             """
-            INSERT INTO memory_writes (ts, session_key, source_ref, action, memory_type, item_id, summary, superseded_ids, error)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO memory_writes (
+                ts, session_key, source_ref, action, memory_type, item_id,
+                summary, superseded_ids, error, projection_key
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(projection_key) WHERE projection_key IS NOT NULL DO NOTHING
             """,
             (
                 ts,
@@ -344,7 +433,49 @@ def _write_memory_write(conn, e: MemoryWriteTrace, ts: str) -> None:
                 e.memory_type,
                 e.item_id,
                 e.summary,
-                _json.dumps(e.superseded_ids, ensure_ascii=False) if e.superseded_ids else None,
+                (
+                    _json.dumps(e.superseded_ids, ensure_ascii=False)
+                    if e.superseded_ids
+                    else None
+                ),
                 e.error,
+                e.projection_key,
+            ),
+        )
+
+
+def _write_model_call(conn, event: ModelCallTrace) -> None:
+    """调用记录按 owner ID 更新 started 状态，终态重扫保持幂等。"""
+    usage = (
+        json.dumps(event.usage, ensure_ascii=False, sort_keys=True)
+        if event.usage is not None
+        else None
+    )
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO model_calls (
+                call_id, state, model, started_at, finished_at,
+                first_token_ms, duration_ms, usage_json, failure
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(call_id) DO UPDATE SET
+                state=excluded.state,
+                model=excluded.model,
+                finished_at=excluded.finished_at,
+                first_token_ms=excluded.first_token_ms,
+                duration_ms=excluded.duration_ms,
+                usage_json=excluded.usage_json,
+                failure=excluded.failure
+            """,
+            (
+                event.call_id,
+                event.state,
+                event.model,
+                event.started_at,
+                event.finished_at,
+                event.first_token_ms,
+                event.duration_ms,
+                usage,
+                event.failure,
             ),
         )

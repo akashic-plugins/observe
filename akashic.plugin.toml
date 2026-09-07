@@ -1,5 +1,5 @@
 schema_version = 1
 name = "observe"
-version = "1.4.1"
+version = "2.0.0"
 api_version = 3
 entrypoint = "plugin.py"
