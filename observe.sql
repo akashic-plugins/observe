@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS turns (
     model_output_tokens INTEGER,            -- 本轮全部模型调用的真实输出 token
     react_cache_prompt_tokens INTEGER,      -- DeepSeek KV cache: 本轮输入中 hit+miss tokens
     react_cache_hit_tokens INTEGER,         -- DeepSeek KV cache: 本轮缓存命中 tokens
-    error       TEXT                        -- NULL = 正常
+    error       TEXT,                       -- NULL = 正常
+    projection_key TEXT
 );
 
 CREATE INDEX IF NOT EXISTS ix_turns_sk_ts ON turns (session_key, ts);
@@ -43,6 +44,7 @@ CREATE INDEX IF NOT EXISTS ix_turns_source ON turns (source, ts);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_assistant_message_id ON turns (assistant_message_id) WHERE assistant_message_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_turns_cache_recent ON turns (ts DESC, id DESC) WHERE react_cache_prompt_tokens IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_turns_agent_cache_recent ON turns (ts DESC, id DESC) WHERE source = 'agent' AND react_cache_prompt_tokens IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_projection_key ON turns (projection_key) WHERE projection_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS kv_cache_totals (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -79,11 +81,28 @@ CREATE TABLE IF NOT EXISTS rag_queries (
     hits_json      TEXT,               -- JSON: [{id, type, score, summary, injected}]
     injected_count INTEGER NOT NULL DEFAULT 0,
     route_decision TEXT,               -- "RETRIEVE" | "NO_RETRIEVE" | NULL
-    error          TEXT
+    error          TEXT,
+    projection_key TEXT
 );
 
 CREATE INDEX IF NOT EXISTS ix_rq_sk_ts  ON rag_queries (session_key, ts);
 CREATE INDEX IF NOT EXISTS ix_rq_caller ON rag_queries (caller, ts);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_rag_projection_key ON rag_queries (projection_key) WHERE projection_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS projection_cursors (
+    domain TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    through_seq INTEGER NOT NULL,
+    ending_id TEXT,
+    PRIMARY KEY (domain, scope)
+);
+
+CREATE TABLE IF NOT EXISTS projection_receipts (
+    domain TEXT NOT NULL,
+    identity TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (domain, identity)
+);
 
 -- ─────────────────────────────────────────────
 -- 3. memory_writes  post-response 记忆写入记录
@@ -98,10 +117,24 @@ CREATE TABLE IF NOT EXISTS memory_writes (
     item_id         TEXT,               -- write: 'new:xxx' or 'reinforced:xxx'
     summary         TEXT,               -- write 时填写
     superseded_ids  TEXT,               -- supersede: JSON 数组
-    error           TEXT
+    error           TEXT,
+    projection_key  TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_mw_sk_ts ON memory_writes (session_key, ts);
 CREATE INDEX IF NOT EXISTS ix_mw_action ON memory_writes (action, ts);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_memory_projection_key ON memory_writes (projection_key) WHERE projection_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS model_calls (
+    call_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    model TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    first_token_ms REAL,
+    duration_ms REAL,
+    usage_json TEXT,
+    failure TEXT
+);
 
 -- ─────────────────────────────────────────────
 -- 4. global_errors  全局异常聚合

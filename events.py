@@ -11,25 +11,27 @@ class RagHitLog:
     item_id: str
     memory_type: str
     score: float
-    summary: str              # 截断 120 字符
-    injected: bool            # 是否最终注入到 context
+    summary: str  # 截断 120 字符
+    injected: bool  # 是否最终注入到 context
     confidence_label: str = ""  # "有印象，不确定" 等，空串表示正常置信度
-    forced: bool = False        # True = 因 tool_requirement 强制注入，非 score 过阈值
+    forced: bool = False  # True = 因 tool_requirement 强制注入，非 score 过阈值
 
 
 @dataclass
 class RagQueryLog:
     """一次 memory 检索事件：query → hits → injected。"""
 
-    caller: str                         # "passive" | "proactive" | "explicit"
+    caller: str  # "passive" | "proactive" | "explicit"
     session_key: str
-    query: str                          # 实际检索用的 query（rewrite 之后）
-    orig_query: str | None              # 改写前原文，None = 未改写
-    aux_queries: list[str]              # HyDE 生成的假想条目列表
+    query: str  # 实际检索用的 query（rewrite 之后）
+    orig_query: str | None  # 改写前原文，None = 未改写
+    aux_queries: list[str]  # HyDE 生成的假想条目列表
     hits: list[RagHitLog]
     injected_count: int
-    route_decision: str | None = None   # "RETRIEVE" | "NO_RETRIEVE"；None = 无 gate
+    route_decision: str | None = None  # "RETRIEVE" | "NO_RETRIEVE"；None = 无 gate
     error: str | None = None
+    projection_key: str | None = None
+    recorded_at: str | None = None
 
 
 @dataclass
@@ -38,17 +40,19 @@ class TurnTrace:
 
     source: Literal["agent", "proactive", "drift"]
     session_key: str
-    user_msg: str | None            # 用户原文
-    llm_output: str                 # LLM 最终输出完整文本
+    user_msg: str | None  # 用户原文
+    llm_output: str  # LLM 最终输出完整文本
     turn_id: str | None = None
     assistant_message_id: str | None = None
-    raw_llm_output: str | None = None       # 装饰/清洗前的原始模型输出
-    meme_tag: str | None = None             # 命中的 <meme:tag>
-    meme_media_count: int | None = None     # 命中的媒体数量
+    raw_llm_output: str | None = None  # 装饰/清洗前的原始模型输出
+    meme_tag: str | None = None  # 命中的 <meme:tag>
+    meme_media_count: int | None = None  # 命中的媒体数量
     tool_calls: list[dict] = field(default_factory=list)
     # 每个 tool call: {name, args, result}（args/result 会截断）
     error: str | None = None
-    tool_chain_json: str | None = None  # JSON: [{text, calls:[{name,args,result}]}] 每轮迭代完整记录
+    tool_chain_json: str | None = (
+        None  # JSON: [{text, calls:[{name,args,result}]}] 每轮迭代完整记录
+    )
     history_window: int | None = None
     history_messages: int | None = None
     history_chars: int | None = None
@@ -62,20 +66,24 @@ class TurnTrace:
     model_output_tokens: int | None = None
     react_cache_prompt_tokens: int | None = None
     react_cache_hit_tokens: int | None = None
+    projection_key: str | None = None
+    projection_source: str | None = None
+    through_seq: int | None = None
+    recorded_at: str | None = None
 
 
 @dataclass
 class GlobalErrorTrace:
     """一个错误指纹在某个小时桶内的聚合记录（全局错误采集）。"""
 
-    fingerprint: str                 # sha1(error_type + normalize(message) + top_app_frame)
-    bucket: str                      # ts[:13]，YYYY-MM-DDTHH 小时桶
-    source: str                      # "log" | "uncaught" | "asyncio" | "thread"
+    fingerprint: str  # sha1(error_type + normalize(message) + top_app_frame)
+    bucket: str  # ts[:13]，YYYY-MM-DDTHH 小时桶
+    source: str  # "log" | "uncaught" | "asyncio" | "thread"
     logger_name: str
     error_type: str
-    message: str                     # 截断 ~500
-    traceback_text: str              # 代表样本，截断 ~4000
-    level: str                       # "ERROR" | "CRITICAL"
+    message: str  # 截断 ~500
+    traceback_text: str  # 代表样本，截断 ~4000
+    level: str  # "ERROR" | "CRITICAL"
     first_ts: str
     last_ts: str
     count: int
@@ -88,9 +96,28 @@ class MemoryWriteTrace:
 
     session_key: str
     source_ref: str
-    action: str          # 'write' | 'supersede'
-    memory_type: str | None = None   # write: 写入类型; supersede: None
-    item_id: str | None = None       # write: 新条目 id (格式 'new:xxx' or 'reinforced:xxx')
-    summary: str | None = None       # write: 写入的 summary
-    superseded_ids: list[str] = field(default_factory=list)  # supersede: 被退休的 id 列表
+    action: str  # 'write' | 'supersede'
+    memory_type: str | None = None  # write: 写入类型; supersede: None
+    item_id: str | None = None  # write: 新条目 id (格式 'new:xxx' or 'reinforced:xxx')
+    summary: str | None = None  # write: 写入的 summary
+    superseded_ids: list[str] = field(
+        default_factory=list
+    )  # supersede: 被退休的 id 列表
     error: str | None = None
+    projection_key: str | None = None
+    recorded_at: str | None = None
+
+
+@dataclass
+class ModelCallTrace:
+    """Models owner 的一条耐久调用记录。"""
+
+    call_id: str
+    state: str
+    model: str
+    started_at: str
+    finished_at: str | None
+    first_token_ms: float | None
+    duration_ms: float | None
+    usage: dict[str, object] | None
+    failure: str | None

@@ -78,6 +78,21 @@ CREATE TABLE IF NOT EXISTS rag_queries (
 CREATE INDEX IF NOT EXISTS ix_rq_sk_ts  ON rag_queries (session_key, ts);
 CREATE INDEX IF NOT EXISTS ix_rq_caller ON rag_queries (caller, ts);
 
+CREATE TABLE IF NOT EXISTS projection_cursors (
+    domain TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    through_seq INTEGER NOT NULL,
+    ending_id TEXT,
+    PRIMARY KEY (domain, scope)
+);
+
+CREATE TABLE IF NOT EXISTS projection_receipts (
+    domain TEXT NOT NULL,
+    identity TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (domain, identity)
+);
+
 -- ─────────────────────────────────────────────
 -- 3. memory_writes  post-response 记忆写入记录
 -- ─────────────────────────────────────────────
@@ -95,6 +110,18 @@ CREATE TABLE IF NOT EXISTS memory_writes (
 );
 CREATE INDEX IF NOT EXISTS ix_mw_sk_ts ON memory_writes (session_key, ts);
 CREATE INDEX IF NOT EXISTS ix_mw_action ON memory_writes (action, ts);
+
+CREATE TABLE IF NOT EXISTS model_calls (
+    call_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    model TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    first_token_ms REAL,
+    duration_ms REAL,
+    usage_json TEXT,
+    failure TEXT
+);
 
 -- ─────────────────────────────────────────────
 -- 4. global_errors  全局错误采集（按 指纹 × 小时桶 聚合）
@@ -142,13 +169,15 @@ _TURNS_COLUMNS: dict[str, str] = {
     "model_output_tokens": "INTEGER",
     "react_cache_prompt_tokens": "INTEGER",
     "react_cache_hit_tokens": "INTEGER",
+    "projection_key": "TEXT",
 }
+
+_RAG_COLUMNS: dict[str, str] = {"projection_key": "TEXT"}
+_MEMORY_COLUMNS: dict[str, str] = {"projection_key": "TEXT"}
 
 
 def _ensure_turns_columns(conn: sqlite3.Connection) -> None:
-    cols = {
-        row[1] for row in conn.execute("PRAGMA table_info(turns)").fetchall()
-    }
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(turns)").fetchall()}
     for col, ddl in _TURNS_COLUMNS.items():
         if col in cols:
             continue
@@ -157,6 +186,10 @@ def _ensure_turns_columns(conn: sqlite3.Connection) -> None:
     _ = conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_assistant_message_id "
         "ON turns (assistant_message_id) WHERE assistant_message_id IS NOT NULL"
+    )
+    _ = conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_projection_key "
+        "ON turns (projection_key) WHERE projection_key IS NOT NULL"
     )
     _ = conn.execute(
         "CREATE INDEX IF NOT EXISTS ix_turns_cache_recent "
@@ -169,6 +202,43 @@ def _ensure_turns_columns(conn: sqlite3.Connection) -> None:
         "WHERE source = 'agent' AND react_cache_prompt_tokens IS NOT NULL"
     )
 
+
+def _ensure_rag_columns(conn: sqlite3.Connection) -> None:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(rag_queries)")}
+    for col, ddl in _RAG_COLUMNS.items():
+        if col not in cols:
+            _ = conn.execute(f"ALTER TABLE rag_queries ADD COLUMN {col} {ddl}")
+    _ = conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_rag_projection_key "
+        "ON rag_queries (projection_key) WHERE projection_key IS NOT NULL"
+    )
+
+
+def _ensure_memory_columns(conn: sqlite3.Connection) -> None:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_writes)")}
+    for col, ddl in _MEMORY_COLUMNS.items():
+        if col not in cols:
+            _ = conn.execute(f"ALTER TABLE memory_writes ADD COLUMN {col} {ddl}")
+    _ = conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_memory_projection_key "
+        "ON memory_writes (projection_key) WHERE projection_key IS NOT NULL"
+    )
+
+
+def _ensure_projection_receipts(conn: sqlite3.Connection) -> None:
+    """把已投影的旧行登记成不随 retention 删除的消费事实。"""
+    conn.execute(
+        "INSERT OR IGNORE INTO projection_receipts "
+        "SELECT 'akasha', projection_key, ts FROM rag_queries "
+        "WHERE projection_key IS NOT NULL"
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO projection_receipts "
+        "SELECT 'markdown', projection_key, ts FROM memory_writes "
+        "WHERE projection_key IS NOT NULL"
+    )
+
+
 def _migrate_removed_proactive_observe(conn: sqlite3.Connection) -> None:
     _ = conn.execute("DROP TABLE IF EXISTS proactive_decisions")
 
@@ -177,7 +247,9 @@ def _ensure_kv_cache_projection(conn: sqlite3.Connection) -> None:
     """在启动边界校验并重建 KV 聚合投影。"""
 
     # 1. 只有版本或水位不一致时才扫描历史表
-    max_turn_id = int(conn.execute("SELECT COALESCE(MAX(id), 0) FROM turns").fetchone()[0])
+    max_turn_id = int(
+        conn.execute("SELECT COALESCE(MAX(id), 0) FROM turns").fetchone()[0]
+    )
     state = conn.execute(
         "SELECT schema_version, last_turn_id FROM kv_cache_projection_state WHERE id = 1"
     ).fetchone()
@@ -192,9 +264,10 @@ def _ensure_kv_cache_projection(conn: sqlite3.Connection) -> None:
 def rebuild_kv_cache_projection(conn: sqlite3.Connection) -> None:
     """从 turns 真相表完整重建 KV 聚合与水位。"""
 
-    max_turn_id = int(conn.execute("SELECT COALESCE(MAX(id), 0) FROM turns").fetchone()[0])
-    aggregate = conn.execute(
-        """
+    max_turn_id = int(
+        conn.execute("SELECT COALESCE(MAX(id), 0) FROM turns").fetchone()[0]
+    )
+    aggregate = conn.execute("""
         SELECT
             COUNT(*),
             SUM(CASE WHEN react_cache_prompt_tokens IS NOT NULL THEN 1 ELSE 0 END),
@@ -208,12 +281,14 @@ def rebuild_kv_cache_projection(conn: sqlite3.Connection) -> None:
             SUM(CASE WHEN source IN ('proactive', 'drift') AND react_cache_prompt_tokens IS NOT NULL THEN 1 ELSE 0 END),
             MAX(CASE WHEN react_cache_prompt_tokens IS NOT NULL THEN ts END)
         FROM turns
-        """
-    ).fetchone()
+        """).fetchone()
     conn.execute("DELETE FROM kv_cache_totals")
     conn.execute(
         "INSERT INTO kv_cache_totals VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        tuple(0 if value is None and index < 10 else value for index, value in enumerate(aggregate)),
+        tuple(
+            0 if value is None and index < 10 else value
+            for index, value in enumerate(aggregate)
+        ),
     )
     conn.execute(
         """
@@ -231,6 +306,9 @@ def open_db(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     _ = conn.executescript(_SCHEMA_SQL)
     _ensure_turns_columns(conn)
+    _ensure_rag_columns(conn)
+    _ensure_memory_columns(conn)
+    _ensure_projection_receipts(conn)
     _migrate_removed_proactive_observe(conn)
     _ensure_kv_cache_projection(conn)
     conn.commit()
