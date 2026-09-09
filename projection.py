@@ -14,6 +14,7 @@ from typing import Any, cast
 from plugins.akasha.recalls import ContextSource, ProgramSource, RecallRecordsRead
 from plugins.turn_projection.plugin import Turn, TurnProjection
 from session.log import MessageCatalog
+from session.message_codec import json_value
 from session.message import (
     CallRef,
     ContentPart,
@@ -120,7 +121,7 @@ def _tool_chain(
             calls.append(
                 {
                     "name": tool_name(part.binding_id),
-                    "arguments": dict(part.arguments),
+                    "arguments": json_value(part.arguments),
                     "result": None if result is None else _texts(result),
                     "outcome": (
                         None

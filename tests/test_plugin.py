@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import importlib.util
 import shutil
 import sqlite3
@@ -153,7 +154,7 @@ def _append_real_messages(log: MessageLog, *, complete: bool) -> None:
         Output(
             (
                 ContentPart("text", "先查一下"),
-                ToolCall("tools.weather.v1", {"city": "杭州"}),
+                ToolCall("tools.weather.v1", {"city": "杭州", "items": [{"details": {"ids": ["one", "two"]}}]}),
                 ContentPart(
                     "model.facts",
                     {
@@ -260,6 +261,8 @@ async def test_real_manager_projects_histories_and_restart_is_idempotent(
                 '"name": "weather"'
                 in connection.execute("SELECT tool_chain_json FROM turns").fetchone()[0]
             )
+            chain = json.loads(connection.execute("SELECT tool_chain_json FROM turns").fetchone()[0])
+            assert chain[0]["calls"][0]["arguments"]["items"] == [{"details": {"ids": ["one", "two"]}}]
             assert connection.execute(
                 "SELECT state,failure FROM model_calls WHERE call_id='call-failed'"
             ).fetchone() == ("unknown", "provider timeout")
