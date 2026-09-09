@@ -221,7 +221,7 @@ def _manager(root: Path, log: MessageLog, workspace: Path) -> PluginManager:
     shutil.copytree(
         Path(module.__file__ or "").resolve().parent,
         plugins / "observe",
-        ignore=shutil.ignore_patterns(".git", ".pytest_cache", "__pycache__"),
+        ignore=shutil.ignore_patterns(".git", ".akashic-core", ".plugin-contracts", ".venv", "node_modules", ".pytest_cache", "__pycache__"),
     )
     return PluginManager(
         plugin_dirs=[plugins],
