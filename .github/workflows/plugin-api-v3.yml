@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: kachofugetsu09/akashic-agent
-          ref: 80a1a0738c79041ef282f8e97e3fa3e066d95fa2
+          ref: c2993eedde3fefa8648c31257b2f35a69864ccfe
           path: .akashic-core
       - uses: actions/setup-python@v5
         with:
@@ -53,13 +53,13 @@ jobs:
       - name: Verify Observe v3 composition
         env:
           AKASHIC_AGENT_ROOT: ${{ github.workspace }}/.akashic-core
-          PYTHONPATH: ${{ github.workspace }}/.akashic-core
+          PYTHONPATH: ${{ github.workspace }}/.akashic-core:${{ github.workspace }}/.akashic-core/sdk/python/src
         run: cd tests && ../.venv/bin/python -m pytest -q .
       - name: Verify Mobile panel behavior
         run: node --test tests/test_mobile_panel.mjs
       - name: Check v3 source types
         env:
-          PYTHONPATH: .akashic-core
+          PYTHONPATH: .akashic-core:${{ github.workspace }}/.akashic-core/sdk/python/src
         run: .venv/bin/pyright --pythonpath .venv/bin/python --level error plugin.py collector.py dashboard.py
       - name: Compile Python sources
         run: python -m compileall -q .
