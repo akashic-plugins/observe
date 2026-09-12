@@ -15,17 +15,20 @@ from agent.plugin_composition import (
     UI_SLOTS,
 )
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from plugins.akasha.message_plugin import AKASHA_RECORDS_VIEW
-from plugins.markdown_memory.store import MEMORY_WRITES
-from plugins.models.projection import MODEL_CALL_HISTORY, MODEL_CALLS
-from plugins.tools.plugin import TOOL_DISPLAY_NAME
-from plugins.turn_projection.plugin import TURN_PROJECTION
 
 from .collector import GlobalErrorCollector
 from .dashboard import ObserveDashboardReader
 from .mobile_kvcache import KVCacheDashboardReader
 from .retention import run_retention_if_needed
-from .projection import run_projection
+from .projection import (
+    AKASHA_RECORDS_VIEW,
+    MEMORY_WRITES,
+    MODEL_CALL_HISTORY,
+    MODEL_CALLS,
+    TOOL_DISPLAY_NAME,
+    TURN_PROJECTION,
+    run_projection,
+)
 from .writer import TraceWriter
 
 logger = logging.getLogger("plugin.observe")

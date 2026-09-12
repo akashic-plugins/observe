@@ -6,16 +6,15 @@ import asyncio
 import json
 import logging
 import sqlite3
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
+from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, Protocol, cast
 
-from plugins.akasha.recalls import ContextSource, ProgramSource, RecallRecordsRead
-from plugins.turn_projection.plugin import Turn, TurnProjection
-from session.log import MessageCatalog
-from session.message_codec import json_value
-from session.message import (
+from agent.plugin_composition import ServiceKey
+from agent.plugin_composition.messages import MESSAGE_CATALOG, MessageCatalog
+from agent.plugin_contracts import (
     CallRef,
     ContentPart,
     Input,
@@ -23,12 +22,99 @@ from session.message import (
     Output,
     ToolCall,
     ToolResult,
+    json_value,
 )
 
 from .events import MemoryWriteTrace, ModelCallTrace, RagHitLog, RagQueryLog, TurnTrace
 from .writer import TraceWriter
 
 logger = logging.getLogger("observe.projection")
+
+
+class ProjectedTurn(Protocol):
+    """Consumer-owned view of the Turn facts needed by Observe."""
+
+    source: str
+    through_seq: int
+    ending_message_id: str | None
+    status: str
+    message_ids: tuple[str, ...]
+    observations: tuple[tuple[CallRef, str], ...]
+
+
+class TurnProjection(Protocol):
+    """Read-only turn projection supplied by the installed owner."""
+
+    def project(
+        self, messages: Sequence[Message], source: str
+    ) -> tuple[ProjectedTurn, ...]: ...
+
+
+TURN_PROJECTION = ServiceKey[TurnProjection]("turn.projection.v1")
+
+
+class CallReader(Protocol):
+    def __call__(self, identity: str) -> Mapping[str, Any]: ...
+
+
+class ModelCallHistory(Protocol):
+    def __call__(self, after: str, limit: int) -> tuple[Mapping[str, Any], ...]: ...
+
+
+MODEL_CALLS = ServiceKey[CallReader]("models.calls.v1")
+MODEL_CALL_HISTORY = ServiceKey[ModelCallHistory]("models.call-history.v1")
+
+
+class MemoryWriteHistory(Protocol):
+    def __call__(
+        self, after: tuple[str, str] | None, limit: int
+    ) -> tuple[dict[str, object], ...]: ...
+
+
+MEMORY_WRITES = ServiceKey[MemoryWriteHistory]("markdown-memory.writes.v1")
+
+
+class ToolDisplayName(Protocol):
+    def __call__(self, binding_id: str) -> str: ...
+
+
+TOOL_DISPLAY_NAME = ServiceKey[ToolDisplayName]("tools.display-name.v1")
+
+
+class RecallHit(Protocol):
+    session_id: str
+    message_ids: tuple[str, ...]
+    score: float
+
+
+class RecallSource(Protocol):
+    kind: str
+
+
+class ProgramRecallSource(Protocol):
+    kind: Literal["program"]
+    query: str
+
+
+class SessionRecallSource(Protocol):
+    kind: Literal["context", "tool"]
+    session_id: str
+
+
+class RecallRecord(Protocol):
+    source: RecallSource
+    timestamp: datetime
+    hits: tuple[RecallHit, ...]
+    presented_message_ids: tuple[str, ...]
+
+
+class RecallRecordsRead(Protocol):
+    def list(self) -> tuple[tuple[str, RecallRecord], ...]: ...
+
+
+AKASHA_RECORDS_VIEW = ServiceKey[Callable[[], RecallRecordsRead]](
+    "akasha.recall-records.v1"
+)
 
 
 def _texts(message: Message) -> str:
@@ -56,7 +142,7 @@ def _cursor(db_path: Path, session_id: str, source: str) -> int:
     return -1 if row is None else int(row[0])
 
 
-def _call_ids(messages: Mapping[str, Message], turn: Turn) -> tuple[str, ...]:
+def _call_ids(messages: Mapping[str, Message], turn: ProjectedTurn) -> tuple[str, ...]:
     call_ids: list[str] = []
     for identity in turn.message_ids:
         message = messages[identity]
@@ -76,7 +162,7 @@ def _call_ids(messages: Mapping[str, Message], turn: Turn) -> tuple[str, ...]:
 
 def _usage(
     call_ids: tuple[str, ...],
-    read_call: Callable[[str], Mapping[str, Any]],
+    read_call: CallReader,
 ) -> tuple[int | None, int | None, int | None]:
     """聚合一个 Turn 引用的全部成功调用，不把未知用量当零。"""
     if not call_ids:
@@ -102,8 +188,8 @@ def _usage(
 
 def _tool_chain(
     messages: Mapping[str, Message],
-    turn: Turn,
-    tool_name: Callable[[str], str],
+    turn: ProjectedTurn,
+    tool_name: ToolDisplayName,
 ) -> list[dict[str, object]]:
     results = {
         call_ref: messages[result_id] for call_ref, result_id in turn.observations
@@ -137,10 +223,10 @@ def _tool_chain(
 
 def _turn_trace(
     session_id: str,
-    turn: Turn,
+    turn: ProjectedTurn,
     by_id: Mapping[str, Message],
-    read_call: Callable[[str], Mapping[str, Any]],
-    tool_name: Callable[[str], str],
+    read_call: CallReader,
+    tool_name: ToolDisplayName,
 ) -> TurnTrace:
     members = [by_id[identity] for identity in turn.message_ids]
     inputs = [message for message in members if isinstance(message.body, Input)]
@@ -196,8 +282,8 @@ def _turn_trace(
 async def project_messages(
     catalog: MessageCatalog,
     projection: TurnProjection,
-    read_call: Callable[[str], Mapping[str, Any]],
-    tool_name: Callable[[str], str],
+    read_call: CallReader,
+    tool_name: ToolDisplayName,
     writer: TraceWriter,
     db_path: Path,
     *,
@@ -220,7 +306,7 @@ async def project_messages(
 
 
 async def project_model_calls(
-    read_page: Callable[[str, int], tuple[Mapping[str, Any], ...]],
+    read_page: ModelCallHistory,
     writer: TraceWriter,
 ) -> None:
     after = ""
@@ -254,7 +340,7 @@ async def project_model_calls(
 
 
 async def project_memory_writes(
-    read_page: Callable[[tuple[str, str] | None, int], tuple[dict[str, object], ...]],
+    read_page: MemoryWriteHistory,
     writer: TraceWriter,
 ) -> None:
     after: tuple[str, str] | None = None
@@ -312,17 +398,20 @@ async def project_akasha(
                     )
                 )
         source = recall.source
-        query = (
-            source.query
-            if isinstance(source, ProgramSource)
-            else f"{source.kind}:{identity}"
-        )
+        if source.kind == "program":
+            query = cast(ProgramRecallSource, source).query
+            session_key = ""
+            caller = "explicit"
+        elif source.kind in {"context", "tool"}:
+            session_key = cast(SessionRecallSource, source).session_id
+            query = f"{source.kind}:{identity}"
+            caller = "passive" if source.kind == "context" else "explicit"
+        else:
+            raise ValueError(f"未知召回来源类型: {source.kind}")
         await writer.submit(
             RagQueryLog(
-                caller=("passive" if isinstance(source, ContextSource) else "explicit"),
-                session_key=(
-                    "" if isinstance(source, ProgramSource) else source.session_id
-                ),
+                caller=caller,
+                session_key=session_key,
                 query=query,
                 orig_query=None,
                 aux_queries=[],
@@ -340,12 +429,10 @@ async def run_projection(
     runtime_scope: Callable[[], AbstractAsyncContextManager[None]],
     catalog: MessageCatalog,
     turns: TurnProjection,
-    read_call: Callable[[str], Mapping[str, Any]],
-    tool_name: Callable[[str], str],
-    model_history: Callable[[str, int], tuple[Mapping[str, Any], ...]],
-    memory_history: Callable[
-        [tuple[str, str] | None, int], tuple[dict[str, object], ...]
-    ],
+    read_call: CallReader,
+    tool_name: ToolDisplayName,
+    model_history: ModelCallHistory,
+    memory_history: MemoryWriteHistory,
     akasha_records: Callable[[], RecallRecordsRead],
     writer: TraceWriter,
     db_path: Path,

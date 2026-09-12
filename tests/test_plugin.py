@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import importlib.util
-import shutil
 import sqlite3
 import sys
 import threading
@@ -15,6 +14,7 @@ from fastapi import FastAPI
 
 from agent.plugin_composition import DashboardContext
 from agent.plugins.composable import ComposablePlugin
+from agent.plugins.install import install_git_plugin
 from agent.plugins.manager import PluginManager
 from agent.plugins.static_manifest import load_static_plugin_manifest
 from bus.event_bus import EventBus
@@ -216,19 +216,22 @@ def _append_final(log: MessageLog, output_writer=None) -> None:
 
 
 def _manager(root: Path, log: MessageLog, workspace: Path) -> PluginManager:
-    plugins = root / "plugins"
-    _write_owner_plugin(plugins)
-    shutil.copytree(
-        Path(module.__file__ or "").resolve().parent,
-        plugins / "observe",
-        ignore=shutil.ignore_patterns(".git", ".akashic-core", ".plugin-contracts", ".venv", "node_modules", ".pytest_cache", "__pycache__"),
+    owners = root / "owners"
+    _write_owner_plugin(root)
+    plugin_home = root / "plugin-home"
+    installed = install_git_plugin(
+        workspace=workspace,
+        source=str(Path(module.__file__ or "").resolve().parent),
+        marketplace="interop",
+        plugins_home=plugin_home,
     )
+    assert len(installed.source_revision) == 40
     return PluginManager(
-        plugin_dirs=[plugins],
+        plugin_dirs=[owners],
         event_bus=EventBus(),
         tool_registry=None,
         workspace=workspace,
-        installed_cache_root=root / "cache",
+        installed_cache_root=plugin_home / "cache",
         message_log=log,
     )
 
