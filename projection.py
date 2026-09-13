@@ -11,11 +11,8 @@ from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any, cast
 
-from plugins.akasha.recalls import ContextSource, ProgramSource, RecallRecordsRead
-from plugins.turn_projection.plugin import Turn, TurnProjection
-from session.log import MessageCatalog
-from session.message_codec import json_value
-from session.message import (
+from agent.plugin_composition.messages import MessageCatalog
+from agent.plugin_contracts import (
     CallRef,
     ContentPart,
     Input,
@@ -23,8 +20,17 @@ from session.message import (
     Output,
     ToolCall,
     ToolResult,
+    json_value,
 )
 
+from .contracts import (
+    RecallContextSource,
+    RecallProgramSource,
+    RecallRecordsRead,
+    RecallToolSource,
+    Turn,
+    TurnProjection,
+)
 from .events import MemoryWriteTrace, ModelCallTrace, RagHitLog, RagQueryLog, TurnTrace
 from .writer import TraceWriter
 
@@ -312,17 +318,27 @@ async def project_akasha(
                     )
                 )
         source = recall.source
-        query = (
-            source.query
-            if isinstance(source, ProgramSource)
-            else f"{source.kind}:{identity}"
-        )
+        if source.kind == "program":
+            program_source = cast(RecallProgramSource, source)
+            query = program_source.query
+            caller = "explicit"
+            session_key = ""
+        elif source.kind == "context":
+            context_source = cast(RecallContextSource, source)
+            query = f"{source.kind}:{identity}"
+            caller = "passive"
+            session_key = context_source.session_id
+        elif source.kind == "tool":
+            tool_source = cast(RecallToolSource, source)
+            query = f"{source.kind}:{identity}"
+            caller = "explicit"
+            session_key = tool_source.session_id
+        else:
+            raise ValueError(f"未知 Akasha recall source: {source.kind}")
         await writer.submit(
             RagQueryLog(
-                caller=("passive" if isinstance(source, ContextSource) else "explicit"),
-                session_key=(
-                    "" if isinstance(source, ProgramSource) else source.session_id
-                ),
+                caller=caller,
+                session_key=session_key,
                 query=query,
                 orig_query=None,
                 aux_queries=[],
