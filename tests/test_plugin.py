@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import importlib.util
+import os
 import shutil
 import sqlite3
 import sys
@@ -16,6 +17,7 @@ from fastapi import FastAPI
 from agent.plugin_composition import DashboardContext
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.manager import PluginManager
+from agent.plugins.selection import PluginSelection
 from agent.plugins.static_manifest import load_static_plugin_manifest
 from bus.event_bus import EventBus
 from session.log import MessageLog, SessionAttributes
@@ -76,7 +78,7 @@ def _write_owner_plugin(root: Path) -> None:
 from datetime import datetime, timezone
 from agent.plugin_composition import RUNTIME_STARTED
 from agent.plugin_composition.messages import OWNER_STATE
-from plugins.akasha.message_plugin import AKASHA_RECORDS_VIEW
+from plugins.akasha.plugin import AKASHA_RECORDS_VIEW
 from plugins.akasha.recalls import Hit, ProgramSource, Recall, RecallRecords, RecallRecordsRead
 from plugins.markdown_memory.store import MEMORY_WRITES
 from plugins.models.projection import MODEL_CALL_HISTORY, MODEL_CALLS
@@ -102,7 +104,7 @@ RECALL = Recall(
    hits=(Hit(node_id=0, session_id="s", message_ids=("input-1",), score=0.8, lane="dense", sources=("direct_dense",)),),
    presented_message_ids=("input-1",), active_basin_count=0, pushes=0, residual_l1=0.0,
   )
-async def apply(ctx, config):
+async def apply(ctx):
  def read_records():
   return RecallRecordsRead(ctx.require(OWNER_STATE).open(ctx))
  async def start(_event):
@@ -223,10 +225,14 @@ def _manager(root: Path, log: MessageLog, workspace: Path) -> PluginManager:
         plugins / "observe",
         ignore=shutil.ignore_patterns(".git", ".akashic-core", ".plugin-contracts", ".venv", "node_modules", ".pytest_cache", "__pycache__"),
     )
+    shutil.copytree(
+        Path(os.environ["AKASHIC_AGENT_ROOT"]) / "plugins" / "ui",
+        plugins / "ui",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
     return PluginManager(
         plugin_dirs=[plugins],
         event_bus=EventBus(),
-        tool_registry=None,
         workspace=workspace,
         installed_cache_root=root / "cache",
         message_log=log,
@@ -240,6 +246,8 @@ async def test_real_manager_projects_histories_and_restart_is_idempotent(
     log = MessageLog(tmp_path / "sessions.db")
     _append_real_messages(log, complete=False)
     workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    PluginSelection(workspace).initialize()
     manager = _manager(tmp_path / "first", log, workspace)
     db_path = workspace / "observe" / "observe.db"
     try:
@@ -300,11 +308,10 @@ async def test_real_manager_projects_histories_and_restart_is_idempotent(
 def test_static_manifest_and_module_exports_match() -> None:
     plugin_dir = Path(module.__file__ or "").resolve().parent
     manifest = load_static_plugin_manifest(plugin_dir)
-    composable = ComposablePlugin.from_module(module)
+    composable = ComposablePlugin.from_module(module, manifest)
     assert manifest.name == composable.name == "observe"
     assert manifest.version == composable.version == "2.0.0"
     assert manifest.api_version == composable.api_version == 3
-    assert composable.dashboard_module == "dashboard.py"
     assert composable.workspace_roots == ("observe",)
 
 

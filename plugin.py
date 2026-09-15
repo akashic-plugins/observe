@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import asyncio
+from importlib import import_module
 from pathlib import Path
 from typing import Literal, cast
 
@@ -15,6 +16,7 @@ from agent.plugin_composition import (
     UI_SLOTS,
 )
 from agent.plugin_composition.messages import MESSAGE_CATALOG
+from agent.plugin_composition.ui import UI
 
 from .collector import GlobalErrorCollector
 from .contracts import (
@@ -37,6 +39,7 @@ api_version = 3
 name = "observe"
 version = "2.0.0"
 inject = (
+    UI,
     UI_SLOTS,
     MESSAGE_CATALOG,
     TURN_PROJECTION,
@@ -47,20 +50,22 @@ inject = (
     TOOL_DISPLAY_NAME,
 )
 workspace_roots = ("observe",)
-dashboard_module = "dashboard.py"
-web_module = "web_module.js"
-web_requires = ("workbench.panels.v2",)
-web_provides = ()
-web_contract_digests = {
-    "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
-}
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """启动 owner 历史投影、错误采集、Dashboard 与移动端查询。"""
 
+    await ctx.require(UI).register(
+        ctx, web="web_module.js",
+        dashboard=lambda: import_module(".dashboard", __package__),
+        requires=("workbench.panels.v2",),
+        provides=(),
+        contract_digests={
+            "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
+        },
+    )
+
     # 1. 所有运行时文件都落在 Core 分配的声明式 Observe workspace root。
-    del config
     observe_root = ctx.workspace_root("observe")
     db_path = observe_root / "observe.db"
     writer = TraceWriter(db_path)
