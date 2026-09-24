@@ -300,7 +300,7 @@ async def test_real_manager_projects_histories_and_restart_is_idempotent(
                 == 1
             )
     finally:
-        if manager.current_snapshot is not None:
+        if manager.live_root is not None:
             await manager.terminate_all()
         log.close()
 
