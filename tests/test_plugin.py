@@ -105,11 +105,12 @@ RECALL = Recall(
    presented_message_ids=("input-1",), active_basin_count=0, pushes=0, residual_l1=0.0,
   )
 async def apply(ctx):
+ state = ctx.require(OWNER_STATE).open(ctx)
  def read_records():
-  return RecallRecordsRead(ctx.require(OWNER_STATE).open(ctx))
+  return RecallRecordsRead(state)
  async def start(_event):
   async with ctx.runtime_scope():
-   records = RecallRecords(ctx.require(OWNER_STATE).open(ctx))
+   records = RecallRecords(state)
    if records.read("recall-1") is None:
     records.save("recall-1", RECALL)
  await ctx.on(RUNTIME_STARTED, start)
