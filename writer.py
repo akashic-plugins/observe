@@ -9,6 +9,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
+from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,7 +33,13 @@ _RESULT_MAX = 500
 type TraceEvent = (
     TurnTrace | RagQueryLog | MemoryWriteTrace | ModelCallTrace | GlobalErrorTrace
 )
-type QueueItem = tuple[TraceEvent, asyncio.Future[None] | None]
+@dataclass(frozen=True)
+class _PendingRecalls:
+    keys: tuple[str, ...]
+    done: asyncio.Future[set[str]]
+
+
+type QueueItem = tuple[TraceEvent, asyncio.Future[None] | None] | _PendingRecalls
 
 
 def _now_iso() -> str:
@@ -87,50 +96,71 @@ class TraceWriter:
         """等待已入队事件写入完成。"""
         await self._queue.join()
 
+    async def pending_recalls(self, keys: Iterable[str]) -> set[str]:
+        """从同一连接读取已提交回执，返回尚未完成的召回身份。"""
+        unique = tuple(dict.fromkeys(keys))
+        pending: set[str] = set()
+        # 小批次既限制 SQLite 参数数量，也让排队中的写入有机会完成。
+        for start in range(0, len(unique), 256):
+            done: asyncio.Future[set[str]] = asyncio.get_running_loop().create_future()
+            await self._queue.put(_PendingRecalls(unique[start:start + 256], done))
+            pending.update(await done)
+        return pending
+
     async def run(self) -> None:
         """后台循环，持续消费队列写 DB。作为 asyncio task 运行。"""
         conn = open_db(self._db_path)
         logger.info("observe writer started: %s", self._db_path)
         try:
             while True:
-                event, done = await self._queue.get()
+                item = await self._queue.get()
                 try:
-                    self._write_one(conn, event)
-                except Exception as error:
-                    logger.exception(
-                        "observe write failed for %s", type(event).__name__
-                    )
-                    if done is not None and not done.done():
-                        done.set_exception(error)
-                else:
-                    if done is not None and not done.done():
-                        done.set_result(None)
+                    self._process(conn, item)
                 finally:
                     self._queue.task_done()
         finally:
             # flush remaining on shutdown
             while not self._queue.empty():
                 try:
-                    e, done = self._queue.get_nowait()
+                    item = self._queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
                 try:
-                    self._write_one(conn, e)
-                except Exception as error:
-                    logger.exception(
-                        "observe shutdown flush failed for %s", type(e).__name__
-                    )
-                    if done is not None and not done.done():
-                        done.set_exception(error)
-                else:
-                    if done is not None and not done.done():
-                        done.set_result(None)
+                    self._process(conn, item)
                 finally:
                     self._queue.task_done()
             conn.close()
             logger.info("observe writer stopped")
 
     # ── 内部写入 ─────────────────────────────────
+
+    def _process(self, conn: sqlite3.Connection, item: QueueItem) -> None:
+        """由连接 owner 执行排队请求，并把真实结果交回调用者。"""
+        if isinstance(item, _PendingRecalls):
+            try:
+                placeholders = ",".join("?" for _ in item.keys)
+                rows = conn.execute(
+                    "SELECT identity FROM projection_receipts WHERE domain='akasha' "
+                    f"AND identity IN ({placeholders})", item.keys,
+                ).fetchall()
+                pending = set(item.keys).difference(row[0] for row in rows)
+            except sqlite3.Error as error:
+                if not item.done.done():
+                    item.done.set_exception(error)
+            else:
+                if not item.done.done():
+                    item.done.set_result(pending)
+            return
+        event, done = item
+        try:
+            self._write_one(conn, event)
+        except Exception as error:
+            logger.exception("observe write failed for %s", type(event).__name__)
+            if done is not None and not done.done():
+                done.set_exception(error)
+        else:
+            if done is not None and not done.done():
+                done.set_result(None)
 
     def _write_one(
         self,

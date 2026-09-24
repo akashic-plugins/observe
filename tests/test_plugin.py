@@ -774,6 +774,102 @@ async def test_projection_yields_inside_one_akasha_recall(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_completed_recall_is_not_reread_after_restart_or_retention(tmp_path: Path) -> None:
+    """已有事务回执阻止再次读取正文；不依赖内存缓存或仍存活的 trace。"""
+    projection = sys.modules[f"{module.__name__}.projection"]
+    retention = sys.modules[f"{module.__name__}.retention"]
+    db_path = tmp_path / "observe.db"
+    writer, writer_task = _running_writer(db_path)
+    reads = 0
+    recall = SimpleNamespace(
+        hits=(SimpleNamespace(session_id="s", message_ids=("message",), score=0.8),),
+        presented_message_ids=(), source=SimpleNamespace(kind="program", query="weather"),
+        timestamp=datetime(2000, 1, 1, tzinfo=timezone.utc),
+    )
+    records = SimpleNamespace(list=lambda: (("old", recall),))
+
+    def get(_identity):
+        nonlocal reads
+        reads += 1
+        return None
+
+    catalog = SimpleNamespace(reader=lambda _session: SimpleNamespace(get=get))
+    try:
+        await projection.project_akasha(records, catalog, writer)
+        assert reads == 1
+        await projection.project_akasha(records, catalog, writer)
+        assert reads == 1
+    finally:
+        writer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer_task
+    await asyncio.to_thread(retention._run_cleanup, db_path)
+    writer, writer_task = _running_writer(db_path)
+    try:
+        await projection.project_akasha(records, catalog, writer)
+        assert reads == 1
+        with closing(sqlite3.connect(db_path)) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM rag_queries").fetchone() == (0,)
+            assert connection.execute("SELECT COUNT(*) FROM projection_receipts").fetchone() == (1,)
+        # 未确认的另一条 recall 仍然必须读取并在同一事务中提交。
+        new_records = SimpleNamespace(list=lambda: (("old", recall), ("new", recall)))
+        await projection.project_akasha(new_records, catalog, writer)
+        assert reads == 2
+        with closing(sqlite3.connect(db_path)) as connection:
+            assert connection.execute("SELECT projection_key FROM rag_queries").fetchall() == [("akasha:new",)]
+            assert connection.execute("SELECT COUNT(*) FROM projection_receipts").fetchone() == (2,)
+    finally:
+        writer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer_task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["read", "write"])
+async def test_recall_receipt_failure_is_retryable(tmp_path: Path, failure: str) -> None:
+    """回执查询或投影事务失败都不得确认完成，恢复后仍能重试。"""
+    projection = sys.modules[f"{module.__name__}.projection"]
+    db_path = tmp_path / "observe.db"
+    writer, writer_task = _running_writer(db_path)
+    recall = SimpleNamespace(
+        hits=(), presented_message_ids=(),
+        source=SimpleNamespace(kind="program", query="retry"),
+        timestamp=datetime.now(timezone.utc),
+    )
+    records = SimpleNamespace(list=lambda: (("retry", recall),))
+    try:
+        # 先等待真正 writer 连接建表；不以时间猜测启动完成。
+        assert await writer.pending_recalls(["akasha:retry"]) == {"akasha:retry"}
+        with closing(sqlite3.connect(db_path)) as connection:
+            if failure == "read":
+                connection.execute("ALTER TABLE projection_receipts RENAME TO saved_receipts")
+            else:
+                connection.execute(
+                    "CREATE TRIGGER fail_rag BEFORE INSERT ON rag_queries "
+                    "BEGIN SELECT RAISE(FAIL, 'injected write failure'); END"
+                )
+            connection.commit()
+        with pytest.raises(sqlite3.Error):
+            await projection.project_akasha(records, SimpleNamespace(), writer)
+        with closing(sqlite3.connect(db_path)) as connection:
+            if failure == "read":
+                connection.execute("ALTER TABLE saved_receipts RENAME TO projection_receipts")
+            else:
+                connection.execute("DROP TRIGGER fail_rag")
+            connection.commit()
+            assert connection.execute("SELECT COUNT(*) FROM projection_receipts").fetchone() == (0,)
+            assert connection.execute("SELECT COUNT(*) FROM rag_queries").fetchone() == (0,)
+        await projection.project_akasha(records, SimpleNamespace(), writer)
+        assert await writer.pending_recalls(["akasha:retry"]) == set()
+        keys = [f"akasha:{index}" for index in range(600)]
+        assert await writer.pending_recalls(["akasha:retry", *keys, *keys]) == set(keys)
+    finally:
+        writer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer_task
+
+
+@pytest.mark.asyncio
 async def test_projection_cancellation_does_not_record_unfinished_recall(
     tmp_path: Path,
 ) -> None:
@@ -894,6 +990,7 @@ async def test_rag_retention_keeps_receipt_and_does_not_resurrect(
             connection.commit()
         reopened = sys.modules[f"{module.__name__}.db"].open_db(db_path)
         reopened.close()
+        assert await writer.pending_recalls(["akasha:old"]) == set()
         await asyncio.to_thread(retention._run_cleanup, db_path)
         await writer.submit(event)
         with sqlite3.connect(db_path) as connection:

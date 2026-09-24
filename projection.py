@@ -322,8 +322,13 @@ async def project_akasha(
     catalog: MessageCatalog,
     writer: TraceWriter,
 ) -> None:
+    """只为未完成的不可变召回读取正文，再由 writer 原子提交投影回执。"""
+    recalls = records.list()
+    pending = await writer.pending_recalls(f"akasha:{identity}" for identity, _ in recalls)
     scanned_without_submit = 0
-    for identity, recall in records.list():
+    for identity, recall in recalls:
+        if f"akasha:{identity}" not in pending:
+            continue
         hits: list[RagHitLog] = []
         for hit in recall.hits:
             for message_id in hit.message_ids:
