@@ -8,7 +8,9 @@ import shutil
 import sqlite3
 import sys
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -26,6 +28,7 @@ from session.message import (
     ContentPart,
     ContentReferences,
     Input,
+    Message,
     Output,
     ToolCall,
     ToolResult,
@@ -418,6 +421,196 @@ def _model_trace(identity: str):
         usage=None,
         failure=None,
     )
+
+
+def _running_writer(db_path: Path):
+    """使用真实队列消费者和 SQLite 回执。"""
+    writer_type = sys.modules[f"{module.__name__}.writer"].TraceWriter
+    writer = writer_type(db_path)
+    return writer, asyncio.create_task(writer.run())
+
+
+@pytest.mark.asyncio
+async def test_projection_yields_across_sessions_without_closed_turns(
+    tmp_path: Path,
+) -> None:
+    projection = sys.modules[f"{module.__name__}.projection"]
+    db_path = tmp_path / "observe.db"
+    writer, writer_task = _running_writer(db_path)
+    now = datetime(2026, 9, 8, tzinfo=timezone.utc)
+    messages = {
+        f"s{index:02d}": Message(
+            message_id=f"message-{index}", session_id=f"s{index:02d}", seq=0,
+            recorded_at=now, author="user" if index < 64 else "akashic",
+            source="conversation",
+            body=(
+                Input((ContentPart("text", "open"),))
+                if index < 64
+                else Output((ContentPart("text", "closed"),), "complete")
+            ),
+        )
+        for index in range(65)
+    }
+    peer_ran = False
+    reads = 0
+
+    async def peer() -> None:
+        nonlocal peer_ran
+        peer_ran = True
+
+    def reader(session_id: str):
+        nonlocal reads
+        reads += 1
+        if reads == 65:
+            assert peer_ran
+        return SimpleNamespace(snapshot=lambda *, through_seq: (messages[session_id],))
+
+    def project(rows, _source):
+        message = rows[0]
+        if isinstance(message.body, Input):
+            return ()
+        return (
+            SimpleNamespace(
+                source="conversation", through_seq=0,
+                ending_message_id=message.message_id, status="complete",
+                message_ids=(message.message_id,), observations=(),
+            ),
+        )
+
+    catalog = SimpleNamespace(reader=reader)
+    turn_projection = SimpleNamespace(project=project)
+    asyncio.create_task(peer())
+    try:
+        await projection.project_messages(
+            catalog, turn_projection, lambda _id: {}, lambda _id: "",
+            writer, db_path, heads={session: 0 for session in messages},
+        )
+        with sqlite3.connect(db_path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM turns").fetchone()[0] == 1
+            assert connection.execute(
+                "SELECT through_seq FROM projection_cursors WHERE scope='s64\nconversation'"
+            ).fetchone()[0] == 0
+    finally:
+        writer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer_task
+
+
+@pytest.mark.asyncio
+async def test_projection_yields_between_memory_history_pages(tmp_path: Path) -> None:
+    projection = sys.modules[f"{module.__name__}.projection"]
+    db_path = tmp_path / "observe.db"
+    writer, writer_task = _running_writer(db_path)
+    peer_ran = False
+    rows = tuple(
+        {
+            "source_ref": f"source-{index:04d}", "kind": "memory_written",
+            "payload": {"value": index}, "done_at": "2026-09-08 00:00:00",
+        }
+        for index in range(1000)
+    )
+
+    async def peer() -> None:
+        nonlocal peer_ran
+        peer_ran = True
+
+    def read_page(after, _limit):
+        if after is not None:
+            assert peer_ran
+            return ()
+        return rows
+
+    asyncio.create_task(peer())
+    try:
+        await projection.project_memory_writes(read_page, writer)
+        with sqlite3.connect(db_path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM memory_writes").fetchone()[0] == 1000
+    finally:
+        writer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer_task
+
+
+@pytest.mark.asyncio
+async def test_projection_yields_inside_one_akasha_recall(tmp_path: Path) -> None:
+    projection = sys.modules[f"{module.__name__}.projection"]
+    db_path = tmp_path / "observe.db"
+    writer, writer_task = _running_writer(db_path)
+    peer_ran = False
+    calls = 0
+    hit = SimpleNamespace(session_id="s", message_ids=("message",), score=0.8)
+    recall = SimpleNamespace(
+        hits=(hit,) * 128, presented_message_ids=(),
+        source=SimpleNamespace(kind="program", query="weather"),
+        timestamp=datetime(2026, 9, 8, tzinfo=timezone.utc),
+    )
+    records = SimpleNamespace(list=lambda: (("recall-1", recall),))
+
+    async def peer() -> None:
+        nonlocal peer_ran
+        peer_ran = True
+
+    def get(_message_id):
+        nonlocal calls
+        calls += 1
+        if calls == 65:
+            assert peer_ran
+        return None
+
+    catalog = SimpleNamespace(reader=lambda _session: SimpleNamespace(get=get))
+    asyncio.create_task(peer())
+    try:
+        await projection.project_akasha(records, catalog, writer)
+        assert calls == 128
+        with sqlite3.connect(db_path) as connection:
+            row = connection.execute(
+                "SELECT hits_json FROM rag_queries WHERE projection_key='akasha:recall-1'"
+            ).fetchone()
+            assert row is not None and len(json.loads(row[0])) == 128
+            assert connection.execute(
+                "SELECT COUNT(*) FROM projection_receipts WHERE domain='akasha'"
+            ).fetchone()[0] == 1
+    finally:
+        writer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer_task
+
+
+@pytest.mark.asyncio
+async def test_projection_cancellation_does_not_record_unfinished_recall(
+    tmp_path: Path,
+) -> None:
+    projection = sys.modules[f"{module.__name__}.projection"]
+    db_path = tmp_path / "observe.db"
+    writer, writer_task = _running_writer(db_path)
+    hit = SimpleNamespace(session_id="s", message_ids=("message",), score=0.8)
+    recall = SimpleNamespace(
+        hits=(hit,) * 128, presented_message_ids=(),
+        source=SimpleNamespace(kind="program", query="weather"),
+        timestamp=datetime(2026, 9, 8, tzinfo=timezone.utc),
+    )
+    records = SimpleNamespace(list=lambda: (("recall-1", recall),))
+    catalog = SimpleNamespace(
+        reader=lambda _session: SimpleNamespace(get=lambda _message_id: None)
+    )
+    task = asyncio.create_task(projection.project_akasha(records, catalog, writer))
+
+    async def cancel() -> None:
+        task.cancel()
+
+    asyncio.create_task(cancel())
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        with sqlite3.connect(db_path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM rag_queries").fetchone()[0] == 0
+            assert connection.execute(
+                "SELECT COUNT(*) FROM projection_receipts WHERE domain='akasha'"
+            ).fetchone()[0] == 0
+    finally:
+        writer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer_task
 
 
 @pytest.mark.asyncio
