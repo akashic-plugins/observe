@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import closing
+from contextlib import asynccontextmanager, closing
 import json
 import importlib.util
 import os
@@ -24,6 +24,7 @@ from agent.plugins.selection import PluginSelection
 from agent.plugins.static_manifest import load_static_plugin_manifest
 from bus.event_bus import EventBus
 from session.log import MessageLog, SessionAttributes
+from plugins.turn_projection.plugin import TurnProjection
 from session.message import (
     CallRef,
     ContentPart,
@@ -513,7 +514,7 @@ async def test_projection_yields_across_sessions_without_closed_turns(
         reads += 1
         if reads == 65:
             assert peer_ran
-        return SimpleNamespace(snapshot=lambda *, through_seq: (messages[session_id],))
+        return SimpleNamespace(read=lambda **_kwargs: (messages[session_id],))
 
     def project(rows, _source):
         message = rows[0]
@@ -544,6 +545,152 @@ async def test_projection_yields_across_sessions_without_closed_turns(
         writer_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await writer_task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_message_prefix_yields_before_decoding_next_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel: bool,
+) -> None:
+    """真实历史读取让出执行权，同时固定上界且不提前提交 cursor。"""
+    projection = sys.modules[f"{module.__name__}.projection"]
+    log = MessageLog(tmp_path / "sessions.db")
+    log.ensure_session("s", attributes=SessionAttributes())
+    inputs = log.writer(
+        "s", author="user", source="conversation", body_types=(Input,),
+        content=_checks(),
+    )
+    outputs = log.writer(
+        "s", author="akashic", source="conversation", body_types=(Output,),
+        content=_checks(),
+    )
+    for index in range(130):
+        inputs.append(f"input-{index}", Input((ContentPart("text", str(index)),)))
+    outputs.append("first-answer", Output((ContentPart("text", "first"),), "complete"))
+    head = log.reader("s").head()
+    peer_ran = False
+    decode = log._decode
+
+    def checked_decode(row):
+        if row["seq"] >= 64:
+            assert peer_ran, "history decoding prevented another ready task from running"
+        return decode(row)
+
+    monkeypatch.setattr(log, "_decode", checked_decode)
+    db_path = tmp_path / "observe.db"
+    writer, writer_task = _running_writer(db_path)
+    task = asyncio.create_task(projection.project_messages(
+        log.catalog(), TurnProjection(), lambda _id: {}, lambda _id: "",
+        writer, db_path, heads={"s": head},
+    ))
+
+    async def peer() -> None:
+        nonlocal peer_ran
+        peer_ran = True
+        inputs.append("later-input", Input((ContentPart("text", "later"),)))
+        outputs.append("later-answer", Output((ContentPart("text", "later"),), "complete"))
+        if cancel:
+            task.cancel()
+
+    peer_task = asyncio.create_task(peer())
+    try:
+        if cancel:
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            await task
+        await peer_task
+        with closing(sqlite3.connect(db_path)) as connection:
+            assert connection.execute("SELECT assistant_message_id FROM turns").fetchall() == (
+                [] if cancel else [("first-answer",)]
+            )
+            assert connection.execute("SELECT through_seq FROM projection_cursors").fetchall() == (
+                [] if cancel else [(head,)]
+            )
+        # 从同一完整前缀重试：取消没有漏记，后来的闭合 Turn 也不会丢失。
+        await projection.project_messages(
+            log.catalog(), TurnProjection(), lambda _id: {}, lambda _id: "",
+            writer, db_path, heads={"s": log.reader("s").head()},
+        )
+        with closing(sqlite3.connect(db_path)) as connection:
+            assert connection.execute("SELECT assistant_message_id FROM turns ORDER BY id").fetchall() == [
+                ("first-answer",), ("later-answer",),
+            ]
+        assert len(log.reader("s").snapshot()) == 133
+    finally:
+        await peer_task
+        writer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer_task
+        log.close()
+
+
+@pytest.mark.asyncio
+async def test_projection_tracks_each_session_only_after_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """无关会话不重扫，读失败的会话在原 head 上重试。"""
+    projection = sys.modules[f"{module.__name__}.projection"]
+    log = MessageLog(tmp_path / "sessions.db")
+    for session_id in ("s", "peer"):
+        log.ensure_session(session_id, SessionAttributes())
+        log.writer(
+            session_id, author="akashic", source="conversation", body_types=(Output,),
+            content=_checks(),
+        ).append(f"{session_id}-0", Output((ContentPart("text", "answer"),), "complete"))
+    db_path = tmp_path / "observe.db"
+    writer, writer_task = _running_writer(db_path)
+    round_number = 0
+    reads: list[tuple[int, str]] = []
+    catalog = log.catalog()
+
+    @asynccontextmanager
+    async def scope():
+        nonlocal round_number
+        round_number += 1
+        if round_number == 5:
+            raise asyncio.CancelledError
+        if round_number in (2, 3):
+            log.writer(
+                "s", author="akashic", source="conversation", body_types=(Output,),
+                content=_checks(),
+            ).append(f"s-{round_number}", Output((ContentPart("text", "new"),), "complete"))
+        yield
+
+    def reader(session_id: str):
+        reads.append((round_number, session_id))
+        if round_number == 3:
+            raise OSError("injected source read failure")
+        return catalog.reader(session_id)
+
+    async def next_round(_delay: float) -> None:
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(projection, "asyncio", SimpleNamespace(
+        sleep=next_round, CancelledError=asyncio.CancelledError,
+    ))
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await projection.run_projection(
+                runtime_scope=scope,
+                catalog=SimpleNamespace(snapshot_heads=catalog.snapshot_heads, reader=reader),
+                turns=TurnProjection(), read_call=lambda _id: {}, tool_name=lambda _id: "",
+                model_history=lambda _after, _limit: (),
+                memory_history=lambda _after, _limit: (),
+                akasha_records=lambda: SimpleNamespace(list=lambda: ()),
+                writer=writer, db_path=db_path,
+            )
+        assert sorted(reads) == [(1, "peer"), (1, "s"), (2, "s"), (3, "s"), (4, "s")]
+        with closing(sqlite3.connect(db_path)) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM turns").fetchone()[0] == 4
+            assert connection.execute(
+                "SELECT through_seq FROM projection_cursors WHERE scope='s\nconversation'"
+            ).fetchone() == (2,)
+    finally:
+        writer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer_task
+        log.close()
 
 
 @pytest.mark.asyncio

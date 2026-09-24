@@ -209,12 +209,22 @@ async def project_messages(
     *,
     heads: Mapping[str, int] | None = None,
 ) -> None:
-    """重读完整 Session 前缀，只提交 cursor 后新闭合的 Turn。"""
+    """分批读取固定 Session 前缀，只提交 cursor 后新闭合的 Turn。"""
     scanned_without_submit = 0
     for session_id, head in (
         catalog.snapshot_heads() if heads is None else heads
     ).items():
-        messages = catalog.reader(session_id).snapshot(through_seq=head)
+        # 读取调度属于异步消费者；不能先同步解码全部历史再让出执行权。
+        reader = catalog.reader(session_id)
+        messages: list[Message] = []
+        cursor = -1
+        while cursor < head:
+            page = reader.read(after_seq=cursor, through_seq=head, limit=64)
+            if not page:
+                break
+            messages.extend(page)
+            cursor = page[-1].seq
+            await asyncio.sleep(0)
         by_id = {message.message_id: message for message in messages}
         for source in sorted({message.source for message in messages}):
             after = _cursor(db_path, session_id, source)
@@ -392,7 +402,11 @@ async def run_projection(
             # 每轮单独取得正式 scope；后台 task 不能借用启动回调的授权。
             async with runtime_scope():
                 heads = catalog.snapshot_heads()
-                if heads != previous_heads:
+                changed_heads = {
+                    session_id: head for session_id, head in heads.items()
+                    if previous_heads is None or previous_heads.get(session_id) != head
+                }
+                if changed_heads:
                     await project_messages(
                         catalog,
                         turns,
@@ -400,7 +414,7 @@ async def run_projection(
                         tool_name,
                         writer,
                         db_path,
-                        heads=heads,
+                        heads=changed_heads,
                     )
                     previous_heads = dict(heads)
                 await project_model_calls(model_history, writer)
