@@ -13,7 +13,9 @@ Akashic 可观测性插件（Plugin API v3），负责投影已提交 Message、
 
 Observe DB 保留原有 `turns`、`rag_queries`、`memory_writes` 和 `global_errors` 历史。投影 receipt 使用 owner 的不可变 ID 防止重启重复写；未闭合 Turn 不推进 cursor，后来提交 Output 后仍会被投影。一次 Turn 引用的全部 `model.facts` 都计入用量，未产生 Message 的失败调用也保存在 `model_calls`。
 
-`rag_queries` 继续保留 90 天，独立 receipt 不随 trace 清理，因此全量重扫不会复活过期记录。`memory_writes` 与既有合同一致，不参与自动 retention。
+消息投影只重读 head 变化的会话，并在固定上界内分批读取、让出事件循环；完整前缀仍由原 TurnProjection 分段。读取被取消或写入失败时不提前推进成功进度，重启仍依据既有持久 receipt 重建。Observe 不改变 Bridge 的探测、租约或失败语义。
+
+Akasha 投影在读取 Message 正文前，先由 TraceWriter 的同一连接查询既有 receipt，只处理尚未提交的不可变 recall。读取或写入失败不留下完成回执，下一轮仍会重试；不另建进度账本。`rag_queries` 继续保留 90 天，独立 receipt 不随 trace 清理，因此重启或全量枚举不会复活过期记录。`memory_writes` 与既有合同一致，不参与自动 retention。
 
 Message source `wake` 继续显示为 `proactive`，`drift` 显示为 `drift`，其余来源显示为 `agent`。原始模型输出和旧 context 临时统计不从 Message 反推；对应列保留，已有历史不改写。
 

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager, closing
 import json
 import importlib.util
+import os
 import shutil
 import sqlite3
 import sys
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -16,14 +20,17 @@ from fastapi import FastAPI
 from agent.plugin_composition import DashboardContext
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.manager import PluginManager
+from agent.plugins.selection import PluginSelection
 from agent.plugins.static_manifest import load_static_plugin_manifest
 from bus.event_bus import EventBus
 from session.log import MessageLog, SessionAttributes
+from plugins.turn_projection.plugin import TurnProjection
 from session.message import (
     CallRef,
     ContentPart,
     ContentReferences,
     Input,
+    Message,
     Output,
     ToolCall,
     ToolResult,
@@ -76,7 +83,7 @@ def _write_owner_plugin(root: Path) -> None:
 from datetime import datetime, timezone
 from agent.plugin_composition import RUNTIME_STARTED
 from agent.plugin_composition.messages import OWNER_STATE
-from plugins.akasha.message_plugin import AKASHA_RECORDS_VIEW
+from plugins.akasha.plugin import AKASHA_RECORDS_VIEW
 from plugins.akasha.recalls import Hit, ProgramSource, Recall, RecallRecords, RecallRecordsRead
 from plugins.markdown_memory.store import MEMORY_WRITES
 from plugins.models.projection import MODEL_CALL_HISTORY, MODEL_CALLS
@@ -102,12 +109,13 @@ RECALL = Recall(
    hits=(Hit(node_id=0, session_id="s", message_ids=("input-1",), score=0.8, lane="dense", sources=("direct_dense",)),),
    presented_message_ids=("input-1",), active_basin_count=0, pushes=0, residual_l1=0.0,
   )
-async def apply(ctx, config):
+async def apply(ctx):
+ state = ctx.require(OWNER_STATE).open(ctx)
  def read_records():
-  return RecallRecordsRead(ctx.require(OWNER_STATE).open(ctx))
+  return RecallRecordsRead(state)
  async def start(_event):
   async with ctx.runtime_scope():
-   records = RecallRecords(ctx.require(OWNER_STATE).open(ctx))
+   records = RecallRecords(state)
    if records.read("recall-1") is None:
     records.save("recall-1", RECALL)
  await ctx.on(RUNTIME_STARTED, start)
@@ -223,10 +231,14 @@ def _manager(root: Path, log: MessageLog, workspace: Path) -> PluginManager:
         plugins / "observe",
         ignore=shutil.ignore_patterns(".git", ".akashic-core", ".plugin-contracts", ".venv", "node_modules", ".pytest_cache", "__pycache__"),
     )
+    shutil.copytree(
+        Path(os.environ["AKASHIC_AGENT_ROOT"]) / "plugins" / "ui",
+        plugins / "ui",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
     return PluginManager(
         plugin_dirs=[plugins],
         event_bus=EventBus(),
-        tool_registry=None,
         workspace=workspace,
         installed_cache_root=root / "cache",
         message_log=log,
@@ -240,6 +252,8 @@ async def test_real_manager_projects_histories_and_restart_is_idempotent(
     log = MessageLog(tmp_path / "sessions.db")
     _append_real_messages(log, complete=False)
     workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    PluginSelection(workspace).initialize()
     manager = _manager(tmp_path / "first", log, workspace)
     db_path = workspace / "observe" / "observe.db"
     try:
@@ -292,7 +306,7 @@ async def test_real_manager_projects_histories_and_restart_is_idempotent(
                 == 1
             )
     finally:
-        if manager.current_snapshot is not None:
+        if manager.live_root is not None:
             await manager.terminate_all()
         log.close()
 
@@ -300,11 +314,10 @@ async def test_real_manager_projects_histories_and_restart_is_idempotent(
 def test_static_manifest_and_module_exports_match() -> None:
     plugin_dir = Path(module.__file__ or "").resolve().parent
     manifest = load_static_plugin_manifest(plugin_dir)
-    composable = ComposablePlugin.from_module(module)
+    composable = ComposablePlugin.from_module(module, manifest)
     assert manifest.name == composable.name == "observe"
     assert manifest.version == composable.version == "2.0.0"
     assert manifest.api_version == composable.api_version == 3
-    assert composable.dashboard_module == "dashboard.py"
     assert composable.workspace_roots == ("observe",)
 
 
@@ -412,6 +425,487 @@ def _model_trace(identity: str):
     )
 
 
+def _running_writer(db_path: Path):
+    """使用真实队列消费者和 SQLite 回执。"""
+    writer_type = sys.modules[f"{module.__name__}.writer"].TraceWriter
+    writer = writer_type(db_path)
+    return writer, asyncio.create_task(writer.run())
+
+
+def test_projection_cursor_closes_connection_on_success_and_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    projection = sys.modules[f"{module.__name__}.projection"]
+    good_path = tmp_path / "good.db"
+    bad_path = tmp_path / "bad.db"
+    with closing(sqlite3.connect(good_path)) as connection:
+        connection.execute(
+            "CREATE TABLE projection_cursors "
+            "(domain TEXT, scope TEXT, through_seq INTEGER)"
+        )
+        connection.execute(
+            "INSERT INTO projection_cursors VALUES (?, ?, ?)",
+            ("turn", "s\nconversation", 7),
+        )
+        connection.commit()
+    with closing(sqlite3.connect(bad_path)):
+        pass
+
+    class TrackedConnection(sqlite3.Connection):
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+            super().close()
+
+    real_connect = sqlite3.connect
+    opened: list[TrackedConnection] = []
+
+    def track_connect(*args, **kwargs):
+        connection = real_connect(*args, factory=TrackedConnection, **kwargs)
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(projection.sqlite3, "connect", track_connect)
+    assert projection._cursor(good_path, "s", "conversation") == 7
+    with pytest.raises(sqlite3.OperationalError):
+        projection._cursor(bad_path, "s", "conversation")
+    assert len(opened) == 2
+    for connection in opened:
+        assert connection.closed
+        with pytest.raises(sqlite3.ProgrammingError):
+            connection.execute("SELECT 1")
+    with closing(real_connect(good_path)) as connection:
+        assert connection.execute(
+            "SELECT through_seq FROM projection_cursors"
+        ).fetchone() == (7,)
+
+
+@pytest.mark.asyncio
+async def test_projection_yields_across_sessions_without_closed_turns(
+    tmp_path: Path,
+) -> None:
+    projection = sys.modules[f"{module.__name__}.projection"]
+    db_path = tmp_path / "observe.db"
+    writer, writer_task = _running_writer(db_path)
+    now = datetime(2026, 9, 8, tzinfo=timezone.utc)
+    messages = {
+        f"s{index:02d}": Message(
+            message_id=f"message-{index}", session_id=f"s{index:02d}", seq=0,
+            recorded_at=now, author="user" if index < 64 else "akashic",
+            source="conversation",
+            body=(
+                Input((ContentPart("text", "open"),))
+                if index < 64
+                else Output((ContentPart("text", "closed"),), "complete")
+            ),
+        )
+        for index in range(65)
+    }
+    peer_ran = False
+    reads = 0
+
+    async def peer() -> None:
+        nonlocal peer_ran
+        peer_ran = True
+
+    def reader(session_id: str):
+        nonlocal reads
+        reads += 1
+        if reads == 65:
+            assert peer_ran
+        return SimpleNamespace(read=lambda **_kwargs: (messages[session_id],))
+
+    def project(rows, _source):
+        message = rows[0]
+        if isinstance(message.body, Input):
+            return ()
+        return (
+            SimpleNamespace(
+                source="conversation", through_seq=0,
+                ending_message_id=message.message_id, status="complete",
+                message_ids=(message.message_id,), observations=(),
+            ),
+        )
+
+    catalog = SimpleNamespace(reader=reader)
+    turn_projection = SimpleNamespace(project=project)
+    asyncio.create_task(peer())
+    try:
+        await projection.project_messages(
+            catalog, turn_projection, lambda _id: {}, lambda _id: "",
+            writer, db_path, heads={session: 0 for session in messages},
+        )
+        with sqlite3.connect(db_path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM turns").fetchone()[0] == 1
+            assert connection.execute(
+                "SELECT through_seq FROM projection_cursors WHERE scope='s64\nconversation'"
+            ).fetchone()[0] == 0
+    finally:
+        writer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer_task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_message_prefix_yields_before_decoding_next_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel: bool,
+) -> None:
+    """真实历史读取让出执行权，同时固定上界且不提前提交 cursor。"""
+    projection = sys.modules[f"{module.__name__}.projection"]
+    log = MessageLog(tmp_path / "sessions.db")
+    log.ensure_session("s", attributes=SessionAttributes())
+    inputs = log.writer(
+        "s", author="user", source="conversation", body_types=(Input,),
+        content=_checks(),
+    )
+    outputs = log.writer(
+        "s", author="akashic", source="conversation", body_types=(Output,),
+        content=_checks(),
+    )
+    for index in range(130):
+        inputs.append(f"input-{index}", Input((ContentPart("text", str(index)),)))
+    outputs.append("first-answer", Output((ContentPart("text", "first"),), "complete"))
+    head = log.reader("s").head()
+    peer_ran = False
+    decode = log._decode
+
+    def checked_decode(row):
+        if row["seq"] >= 64:
+            assert peer_ran, "history decoding prevented another ready task from running"
+        return decode(row)
+
+    monkeypatch.setattr(log, "_decode", checked_decode)
+    db_path = tmp_path / "observe.db"
+    writer, writer_task = _running_writer(db_path)
+    task = asyncio.create_task(projection.project_messages(
+        log.catalog(), TurnProjection(), lambda _id: {}, lambda _id: "",
+        writer, db_path, heads={"s": head},
+    ))
+
+    async def peer() -> None:
+        nonlocal peer_ran
+        peer_ran = True
+        inputs.append("later-input", Input((ContentPart("text", "later"),)))
+        outputs.append("later-answer", Output((ContentPart("text", "later"),), "complete"))
+        if cancel:
+            task.cancel()
+
+    peer_task = asyncio.create_task(peer())
+    try:
+        if cancel:
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            await task
+        await peer_task
+        with closing(sqlite3.connect(db_path)) as connection:
+            assert connection.execute("SELECT assistant_message_id FROM turns").fetchall() == (
+                [] if cancel else [("first-answer",)]
+            )
+            assert connection.execute("SELECT through_seq FROM projection_cursors").fetchall() == (
+                [] if cancel else [(head,)]
+            )
+        # 从同一完整前缀重试：取消没有漏记，后来的闭合 Turn 也不会丢失。
+        await projection.project_messages(
+            log.catalog(), TurnProjection(), lambda _id: {}, lambda _id: "",
+            writer, db_path, heads={"s": log.reader("s").head()},
+        )
+        with closing(sqlite3.connect(db_path)) as connection:
+            assert connection.execute("SELECT assistant_message_id FROM turns ORDER BY id").fetchall() == [
+                ("first-answer",), ("later-answer",),
+            ]
+        assert len(log.reader("s").snapshot()) == 133
+    finally:
+        await peer_task
+        writer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer_task
+        log.close()
+
+
+@pytest.mark.asyncio
+async def test_projection_tracks_each_session_only_after_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """无关会话不重扫，读失败的会话在原 head 上重试。"""
+    projection = sys.modules[f"{module.__name__}.projection"]
+    log = MessageLog(tmp_path / "sessions.db")
+    for session_id in ("s", "peer"):
+        log.ensure_session(session_id, SessionAttributes())
+        log.writer(
+            session_id, author="akashic", source="conversation", body_types=(Output,),
+            content=_checks(),
+        ).append(f"{session_id}-0", Output((ContentPart("text", "answer"),), "complete"))
+    db_path = tmp_path / "observe.db"
+    writer, writer_task = _running_writer(db_path)
+    round_number = 0
+    reads: list[tuple[int, str]] = []
+    catalog = log.catalog()
+
+    @asynccontextmanager
+    async def scope():
+        nonlocal round_number
+        round_number += 1
+        if round_number == 5:
+            raise asyncio.CancelledError
+        if round_number in (2, 3):
+            log.writer(
+                "s", author="akashic", source="conversation", body_types=(Output,),
+                content=_checks(),
+            ).append(f"s-{round_number}", Output((ContentPart("text", "new"),), "complete"))
+        yield
+
+    def reader(session_id: str):
+        reads.append((round_number, session_id))
+        if round_number == 3:
+            raise OSError("injected source read failure")
+        return catalog.reader(session_id)
+
+    async def next_round(_delay: float) -> None:
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(projection, "asyncio", SimpleNamespace(
+        sleep=next_round, CancelledError=asyncio.CancelledError,
+    ))
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await projection.run_projection(
+                runtime_scope=scope,
+                catalog=SimpleNamespace(snapshot_heads=catalog.snapshot_heads, reader=reader),
+                turns=TurnProjection(), read_call=lambda _id: {}, tool_name=lambda _id: "",
+                model_history=lambda _after, _limit: (),
+                memory_history=lambda _after, _limit: (),
+                akasha_records=lambda: SimpleNamespace(list=lambda: ()),
+                writer=writer, db_path=db_path,
+            )
+        assert sorted(reads) == [(1, "peer"), (1, "s"), (2, "s"), (3, "s"), (4, "s")]
+        with closing(sqlite3.connect(db_path)) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM turns").fetchone()[0] == 4
+            assert connection.execute(
+                "SELECT through_seq FROM projection_cursors WHERE scope='s\nconversation'"
+            ).fetchone() == (2,)
+    finally:
+        writer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer_task
+        log.close()
+
+
+@pytest.mark.asyncio
+async def test_projection_yields_between_memory_history_pages(tmp_path: Path) -> None:
+    projection = sys.modules[f"{module.__name__}.projection"]
+    db_path = tmp_path / "observe.db"
+    writer, writer_task = _running_writer(db_path)
+    peer_ran = False
+    rows = tuple(
+        {
+            "source_ref": f"source-{index:04d}", "kind": "memory_written",
+            "payload": {"value": index}, "done_at": "2026-09-08 00:00:00",
+        }
+        for index in range(1000)
+    )
+
+    async def peer() -> None:
+        nonlocal peer_ran
+        peer_ran = True
+
+    def read_page(after, _limit):
+        if after is not None:
+            assert peer_ran
+            return ()
+        return rows
+
+    asyncio.create_task(peer())
+    try:
+        await projection.project_memory_writes(read_page, writer)
+        with sqlite3.connect(db_path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM memory_writes").fetchone()[0] == 1000
+    finally:
+        writer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer_task
+
+
+@pytest.mark.asyncio
+async def test_projection_yields_inside_one_akasha_recall(tmp_path: Path) -> None:
+    projection = sys.modules[f"{module.__name__}.projection"]
+    db_path = tmp_path / "observe.db"
+    writer, writer_task = _running_writer(db_path)
+    peer_ran = False
+    calls = 0
+    hit = SimpleNamespace(session_id="s", message_ids=("message",), score=0.8)
+    recall = SimpleNamespace(
+        hits=(hit,) * 128, presented_message_ids=(),
+        source=SimpleNamespace(kind="program", query="weather"),
+        timestamp=datetime(2026, 9, 8, tzinfo=timezone.utc),
+    )
+    records = SimpleNamespace(list=lambda: (("recall-1", recall),))
+
+    async def peer() -> None:
+        nonlocal peer_ran
+        peer_ran = True
+
+    def get(_message_id):
+        nonlocal calls
+        calls += 1
+        if calls == 65:
+            assert peer_ran
+        return None
+
+    catalog = SimpleNamespace(reader=lambda _session: SimpleNamespace(get=get))
+    asyncio.create_task(peer())
+    try:
+        await projection.project_akasha(records, catalog, writer)
+        assert calls == 128
+        with sqlite3.connect(db_path) as connection:
+            row = connection.execute(
+                "SELECT hits_json FROM rag_queries WHERE projection_key='akasha:recall-1'"
+            ).fetchone()
+            assert row is not None and len(json.loads(row[0])) == 128
+            assert connection.execute(
+                "SELECT COUNT(*) FROM projection_receipts WHERE domain='akasha'"
+            ).fetchone()[0] == 1
+    finally:
+        writer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer_task
+
+
+@pytest.mark.asyncio
+async def test_completed_recall_is_not_reread_after_restart_or_retention(tmp_path: Path) -> None:
+    """已有事务回执阻止再次读取正文；不依赖内存缓存或仍存活的 trace。"""
+    projection = sys.modules[f"{module.__name__}.projection"]
+    retention = sys.modules[f"{module.__name__}.retention"]
+    db_path = tmp_path / "observe.db"
+    writer, writer_task = _running_writer(db_path)
+    reads = 0
+    recall = SimpleNamespace(
+        hits=(SimpleNamespace(session_id="s", message_ids=("message",), score=0.8),),
+        presented_message_ids=(), source=SimpleNamespace(kind="program", query="weather"),
+        timestamp=datetime(2000, 1, 1, tzinfo=timezone.utc),
+    )
+    records = SimpleNamespace(list=lambda: (("old", recall),))
+
+    def get(_identity):
+        nonlocal reads
+        reads += 1
+        return None
+
+    catalog = SimpleNamespace(reader=lambda _session: SimpleNamespace(get=get))
+    try:
+        await projection.project_akasha(records, catalog, writer)
+        assert reads == 1
+        await projection.project_akasha(records, catalog, writer)
+        assert reads == 1
+    finally:
+        writer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer_task
+    await asyncio.to_thread(retention._run_cleanup, db_path)
+    writer, writer_task = _running_writer(db_path)
+    try:
+        await projection.project_akasha(records, catalog, writer)
+        assert reads == 1
+        with closing(sqlite3.connect(db_path)) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM rag_queries").fetchone() == (0,)
+            assert connection.execute("SELECT COUNT(*) FROM projection_receipts").fetchone() == (1,)
+        # 未确认的另一条 recall 仍然必须读取并在同一事务中提交。
+        new_records = SimpleNamespace(list=lambda: (("old", recall), ("new", recall)))
+        await projection.project_akasha(new_records, catalog, writer)
+        assert reads == 2
+        with closing(sqlite3.connect(db_path)) as connection:
+            assert connection.execute("SELECT projection_key FROM rag_queries").fetchall() == [("akasha:new",)]
+            assert connection.execute("SELECT COUNT(*) FROM projection_receipts").fetchone() == (2,)
+    finally:
+        writer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer_task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["read", "write"])
+async def test_recall_receipt_failure_is_retryable(tmp_path: Path, failure: str) -> None:
+    """回执查询或投影事务失败都不得确认完成，恢复后仍能重试。"""
+    projection = sys.modules[f"{module.__name__}.projection"]
+    db_path = tmp_path / "observe.db"
+    writer, writer_task = _running_writer(db_path)
+    recall = SimpleNamespace(
+        hits=(), presented_message_ids=(),
+        source=SimpleNamespace(kind="program", query="retry"),
+        timestamp=datetime.now(timezone.utc),
+    )
+    records = SimpleNamespace(list=lambda: (("retry", recall),))
+    try:
+        # 先等待真正 writer 连接建表；不以时间猜测启动完成。
+        assert await writer.pending_recalls(["akasha:retry"]) == {"akasha:retry"}
+        with closing(sqlite3.connect(db_path)) as connection:
+            if failure == "read":
+                connection.execute("ALTER TABLE projection_receipts RENAME TO saved_receipts")
+            else:
+                connection.execute(
+                    "CREATE TRIGGER fail_rag BEFORE INSERT ON rag_queries "
+                    "BEGIN SELECT RAISE(FAIL, 'injected write failure'); END"
+                )
+            connection.commit()
+        with pytest.raises(sqlite3.Error):
+            await projection.project_akasha(records, SimpleNamespace(), writer)
+        with closing(sqlite3.connect(db_path)) as connection:
+            if failure == "read":
+                connection.execute("ALTER TABLE saved_receipts RENAME TO projection_receipts")
+            else:
+                connection.execute("DROP TRIGGER fail_rag")
+            connection.commit()
+            assert connection.execute("SELECT COUNT(*) FROM projection_receipts").fetchone() == (0,)
+            assert connection.execute("SELECT COUNT(*) FROM rag_queries").fetchone() == (0,)
+        await projection.project_akasha(records, SimpleNamespace(), writer)
+        assert await writer.pending_recalls(["akasha:retry"]) == set()
+        keys = [f"akasha:{index}" for index in range(600)]
+        assert await writer.pending_recalls(["akasha:retry", *keys, *keys]) == set(keys)
+    finally:
+        writer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer_task
+
+
+@pytest.mark.asyncio
+async def test_projection_cancellation_does_not_record_unfinished_recall(
+    tmp_path: Path,
+) -> None:
+    projection = sys.modules[f"{module.__name__}.projection"]
+    db_path = tmp_path / "observe.db"
+    writer, writer_task = _running_writer(db_path)
+    hit = SimpleNamespace(session_id="s", message_ids=("message",), score=0.8)
+    recall = SimpleNamespace(
+        hits=(hit,) * 128, presented_message_ids=(),
+        source=SimpleNamespace(kind="program", query="weather"),
+        timestamp=datetime(2026, 9, 8, tzinfo=timezone.utc),
+    )
+    records = SimpleNamespace(list=lambda: (("recall-1", recall),))
+    catalog = SimpleNamespace(
+        reader=lambda _session: SimpleNamespace(get=lambda _message_id: None)
+    )
+    task = asyncio.create_task(projection.project_akasha(records, catalog, writer))
+
+    async def cancel() -> None:
+        task.cancel()
+
+    asyncio.create_task(cancel())
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        with sqlite3.connect(db_path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM rag_queries").fetchone()[0] == 0
+            assert connection.execute(
+                "SELECT COUNT(*) FROM projection_receipts WHERE domain='akasha'"
+            ).fetchone()[0] == 0
+    finally:
+        writer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer_task
+
+
 @pytest.mark.asyncio
 async def test_durable_submit_does_not_drop_more_than_queue_capacity(
     tmp_path: Path,
@@ -496,6 +990,7 @@ async def test_rag_retention_keeps_receipt_and_does_not_resurrect(
             connection.commit()
         reopened = sys.modules[f"{module.__name__}.db"].open_db(db_path)
         reopened.close()
+        assert await writer.pending_recalls(["akasha:old"]) == set()
         await asyncio.to_thread(retention._run_cleanup, db_path)
         await writer.submit(event)
         with sqlite3.connect(db_path) as connection:

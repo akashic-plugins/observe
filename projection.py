@@ -7,7 +7,7 @@ import json
 import logging
 import sqlite3
 from collections.abc import Callable, Mapping
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, closing
 from pathlib import Path
 from typing import Any, cast
 
@@ -53,7 +53,7 @@ def _texts(message: Message) -> str:
 def _cursor(db_path: Path, session_id: str, source: str) -> int:
     if not db_path.exists():
         return -1
-    with sqlite3.connect(str(db_path)) as connection:
+    with closing(sqlite3.connect(str(db_path))) as connection:
         row = connection.execute(
             "SELECT through_seq FROM projection_cursors "
             "WHERE domain='turn' AND scope=?",
@@ -209,20 +209,40 @@ async def project_messages(
     *,
     heads: Mapping[str, int] | None = None,
 ) -> None:
-    """重读完整 Session 前缀，只提交 cursor 后新闭合的 Turn。"""
+    """分批读取固定 Session 前缀，只提交 cursor 后新闭合的 Turn。"""
+    scanned_without_submit = 0
     for session_id, head in (
         catalog.snapshot_heads() if heads is None else heads
     ).items():
-        messages = catalog.reader(session_id).snapshot(through_seq=head)
+        # 读取调度属于异步消费者；不能先同步解码全部历史再让出执行权。
+        reader = catalog.reader(session_id)
+        messages: list[Message] = []
+        cursor = -1
+        while cursor < head:
+            page = reader.read(after_seq=cursor, through_seq=head, limit=64)
+            if not page:
+                break
+            messages.extend(page)
+            cursor = page[-1].seq
+            await asyncio.sleep(0)
         by_id = {message.message_id: message for message in messages}
         for source in sorted({message.source for message in messages}):
             after = _cursor(db_path, session_id, source)
             for turn in projection.project(messages, source):
                 if turn.status == "open" or turn.through_seq <= after:
+                    scanned_without_submit += 1
+                    if scanned_without_submit >= 64:
+                        await asyncio.sleep(0)
+                        scanned_without_submit = 0
                     continue
                 await writer.submit(
                     _turn_trace(session_id, turn, by_id, read_call, tool_name)
                 )
+                scanned_without_submit = 0
+        scanned_without_submit += 1
+        if scanned_without_submit >= 64:
+            await asyncio.sleep(0)
+            scanned_without_submit = 0
 
 
 async def project_model_calls(
@@ -271,17 +291,16 @@ async def project_memory_writes(
         if len(page) < 1000:
             break
         after = (cast(str, page[-1]["source_ref"]), cast(str, page[-1]["kind"]))
-    sessions = {
-        cast(str, row["source_ref"]): cast(
-            str, cast(Mapping[str, object], row["payload"])["session_key"]
-        )
-        for row in rows
-        if row["kind"] == "markdown_projection_order_v1"
-        and isinstance(row.get("payload"), Mapping)
-        and isinstance(
-            cast(Mapping[str, object], row["payload"]).get("session_key"), str
-        )
-    }
+        await asyncio.sleep(0)
+    sessions: dict[str, str] = {}
+    for index, row in enumerate(rows, 1):
+        payload = row.get("payload")
+        if row["kind"] == "markdown_projection_order_v1" and isinstance(
+            payload, Mapping
+        ) and isinstance(payload.get("session_key"), str):
+            sessions[cast(str, row["source_ref"])] = cast(str, payload["session_key"])
+        if index % 1000 == 0:
+            await asyncio.sleep(0)
     for row in rows:
         source_ref, kind = cast(str, row["source_ref"]), cast(str, row["kind"])
         payload = row.get("payload")
@@ -303,7 +322,13 @@ async def project_akasha(
     catalog: MessageCatalog,
     writer: TraceWriter,
 ) -> None:
-    for identity, recall in records.list():
+    """只为未完成的不可变召回读取正文，再由 writer 原子提交投影回执。"""
+    recalls = records.list()
+    pending = await writer.pending_recalls(f"akasha:{identity}" for identity, _ in recalls)
+    scanned_without_submit = 0
+    for identity, recall in recalls:
+        if f"akasha:{identity}" not in pending:
+            continue
         hits: list[RagHitLog] = []
         for hit in recall.hits:
             for message_id in hit.message_ids:
@@ -317,6 +342,14 @@ async def project_akasha(
                         injected=message_id in recall.presented_message_ids,
                     )
                 )
+                scanned_without_submit += 1
+                if scanned_without_submit >= 64:
+                    await asyncio.sleep(0)
+                    scanned_without_submit = 0
+            scanned_without_submit += 1
+            if scanned_without_submit >= 64:
+                await asyncio.sleep(0)
+                scanned_without_submit = 0
         source = recall.source
         if source.kind == "program":
             program_source = cast(RecallProgramSource, source)
@@ -349,6 +382,7 @@ async def project_akasha(
                 recorded_at=recall.timestamp.isoformat(),
             )
         )
+        scanned_without_submit = 0
 
 
 async def run_projection(
@@ -373,7 +407,11 @@ async def run_projection(
             # 每轮单独取得正式 scope；后台 task 不能借用启动回调的授权。
             async with runtime_scope():
                 heads = catalog.snapshot_heads()
-                if heads != previous_heads:
+                changed_heads = {
+                    session_id: head for session_id, head in heads.items()
+                    if previous_heads is None or previous_heads.get(session_id) != head
+                }
+                if changed_heads:
                     await project_messages(
                         catalog,
                         turns,
@@ -381,7 +419,7 @@ async def run_projection(
                         tool_name,
                         writer,
                         db_path,
-                        heads=heads,
+                        heads=changed_heads,
                     )
                     previous_heads = dict(heads)
                 await project_model_calls(model_history, writer)
