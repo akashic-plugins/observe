@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import closing
 import json
 import importlib.util
 import os
@@ -428,6 +429,55 @@ def _running_writer(db_path: Path):
     writer_type = sys.modules[f"{module.__name__}.writer"].TraceWriter
     writer = writer_type(db_path)
     return writer, asyncio.create_task(writer.run())
+
+
+def test_projection_cursor_closes_connection_on_success_and_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    projection = sys.modules[f"{module.__name__}.projection"]
+    good_path = tmp_path / "good.db"
+    bad_path = tmp_path / "bad.db"
+    with closing(sqlite3.connect(good_path)) as connection:
+        connection.execute(
+            "CREATE TABLE projection_cursors "
+            "(domain TEXT, scope TEXT, through_seq INTEGER)"
+        )
+        connection.execute(
+            "INSERT INTO projection_cursors VALUES (?, ?, ?)",
+            ("turn", "s\nconversation", 7),
+        )
+        connection.commit()
+    with closing(sqlite3.connect(bad_path)):
+        pass
+
+    class TrackedConnection(sqlite3.Connection):
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+            super().close()
+
+    real_connect = sqlite3.connect
+    opened: list[TrackedConnection] = []
+
+    def track_connect(*args, **kwargs):
+        connection = real_connect(*args, factory=TrackedConnection, **kwargs)
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(projection.sqlite3, "connect", track_connect)
+    assert projection._cursor(good_path, "s", "conversation") == 7
+    with pytest.raises(sqlite3.OperationalError):
+        projection._cursor(bad_path, "s", "conversation")
+    assert len(opened) == 2
+    for connection in opened:
+        assert connection.closed
+        with pytest.raises(sqlite3.ProgrammingError):
+            connection.execute("SELECT 1")
+    with closing(real_connect(good_path)) as connection:
+        assert connection.execute(
+            "SELECT through_seq FROM projection_cursors"
+        ).fetchone() == (7,)
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,7 @@ import json
 import logging
 import sqlite3
 from collections.abc import Callable, Mapping
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, closing
 from pathlib import Path
 from typing import Any, cast
 
@@ -53,7 +53,7 @@ def _texts(message: Message) -> str:
 def _cursor(db_path: Path, session_id: str, source: str) -> int:
     if not db_path.exists():
         return -1
-    with sqlite3.connect(str(db_path)) as connection:
+    with closing(sqlite3.connect(str(db_path))) as connection:
         row = connection.execute(
             "SELECT through_seq FROM projection_cursors "
             "WHERE domain='turn' AND scope=?",
