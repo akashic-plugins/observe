@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const source = await readFile(new URL("../mobile_panel.js", import.meta.url), "utf8");
-const styles = await readFile(new URL("../mobile_panel.css", import.meta.url), "utf8");
+const source = await readFile(new URL("../plugin_ui.js", import.meta.url), "utf8");
+const styles = await readFile(new URL("../plugin_ui.css", import.meta.url), "utf8");
 const panel = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 
 function contrastRatio(first, second) {
@@ -31,7 +31,7 @@ test("turn tail retries until observe writer exposes exact usage", async () => {
   };
   let calls = 0;
   const cacheModes = [];
-  const messageId = "mobile:observe-seam:1";
+  const messageId = "web:observe-seam:1";
   const host = {
     className: "",
     textContent: "",
@@ -41,7 +41,7 @@ test("turn tail retries until observe writer exposes exact usage", async () => {
   };
   const cleanup = panel.default.slots["turn.after_answer"].mount(host, {
     messageId,
-    sessionId: "mobile:observe-seam",
+    sessionId: "web:observe-seam",
     async query(method, payload, options) {
       calls += 1;
       assert.equal(method, "kvcache.message_usage");
@@ -135,7 +135,7 @@ test("health status uses color only for an actionable state", () => {
   assert.equal(panel.default.navigation, undefined);
 });
 
-test("health details stay inside the mobile viewport", () => {
+test("health details stay inside the narrow viewport", () => {
   assert.match(styles, /\.observe-health-error__detail\s*\{[^}]*max-width:\s*100%/s);
   assert.match(styles, /\.observe-health-error__detail pre\s*\{[^}]*max-width:\s*100%/s);
   assert.match(styles, /\.observe-health-error__detail pre\s*\{[^}]*overflow-wrap:\s*anywhere/s);

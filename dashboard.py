@@ -199,7 +199,7 @@ class ObserveDashboardReader:
             "sections": sections,
         }
 
-    def get_mobile_global_health(
+    def get_ui_global_health(
         self,
         range_token: str,
         *,
@@ -237,7 +237,7 @@ class ObserveDashboardReader:
             "items": groups[:limit],
         }
 
-    def get_mobile_global_detail(
+    def get_ui_global_detail(
         self,
         fingerprint: str,
         range_token: str,
