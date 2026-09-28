@@ -205,7 +205,7 @@ class ObserveDashboardReader:
         *,
         limit: int,
     ) -> dict[str, Any]:
-        """一次读取并返回手机所需的错误状态与摘要列表。"""
+        """一次读取并返回插件界面的错误状态与摘要列表。"""
 
         # 1. 同一快照排除 ignored，避免状态头与可操作列表互相矛盾
         cutoff, _ = _resolve_range(range_token)
@@ -225,7 +225,7 @@ class ObserveDashboardReader:
         )
         total = sum(int(group["count"]) for group in groups)
 
-        # 2. 手机先看增长项，只返回有限摘要，不读取 traceback 与现场会话
+        # 2. 界面先展示增长项，只返回有限摘要，不读取 traceback 与现场会话
         for group in groups:
             group.pop("_buckets", None)
         return {
@@ -242,7 +242,7 @@ class ObserveDashboardReader:
         fingerprint: str,
         range_token: str,
     ) -> dict[str, Any]:
-        """只读取手机展开项需要的错误详情。"""
+        """只读取界面展开项需要的错误详情。"""
 
         cutoff, _ = _resolve_range(range_token)
         if not self.db_path.exists():
