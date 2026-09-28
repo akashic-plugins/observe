@@ -5,8 +5,10 @@ import {
   useState,
   type ReactElement,
   type ReactNode,
+  type MouseEventHandler,
 } from "react";
 import { createRoot } from "react-dom/client";
+import "./dashboard_panel.css";
 import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
 import type {
   ChartTone,
@@ -252,6 +254,14 @@ function ErrorDrill({
   const [savingStatus, setSavingStatus] = useState<boolean>(false);
   const [tab, setTab] = useState<"trend" | "trace" | "occ">("trace");
   const [variant, setVariant] = useState<number>(0);
+  const [readingDetail, setReadingDetail] = useState(false);
+  const detailBackRef = useRef<HTMLButtonElement>(null);
+  const listTriggerRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (readingDetail) detailBackRef.current?.focus();
+    else listTriggerRef.current?.focus();
+  }, [readingDetail]);
   const listReadRef = useRef<AbortController | null>(null);
   const statusReadRef = useRef<AbortController | null>(null);
 
@@ -384,18 +394,10 @@ function ErrorDrill({
         role="dialog"
         aria-modal="true"
         aria-labelledby="observe-error-dialog-title"
-        className="fixed z-40 flex flex-col overflow-hidden rounded-md border border-border-strong bg-surface"
-        style={{
-          width: "min(1180px, 94vw)",
-          height: "min(84vh, 760px)",
-          left: "50%",
-          top: "50%",
-          marginLeft: "calc(min(1180px, 94vw) / -2)",
-          marginTop: "calc(min(84vh, 760px) / -2)",
-        }}
+        className={`observe-error-dialog fixed z-40 flex flex-col overflow-hidden rounded-md border border-border-strong bg-surface ${readingDetail ? "is-reading" : ""}`}
       >
         {/* 头部：402 大数字 + 摘要徽标 + range */}
-        <div className="flex flex-shrink-0 items-center gap-4 border-b border-border px-5 py-4">
+        <div className="observe-error-header flex flex-shrink-0 items-center gap-4 border-b border-border px-5 py-4">
           <button
             ref={closeButtonRef}
             type="button"
@@ -418,7 +420,7 @@ function ErrorDrill({
         </div>
 
         {/* 切维 + 搜索 */}
-        <div className="flex flex-shrink-0 items-center gap-3 border-b border-border px-4 py-2.5">
+        <div className="observe-error-filters flex flex-shrink-0 items-center gap-3 border-b border-border px-4 py-2.5">
           <div className="flex gap-1 rounded-md border border-border bg-bg p-0.5">
             {[
               { k: "type", l: "按类型" },
@@ -445,8 +447,8 @@ function ErrorDrill({
         </div>
 
         {/* 左群组 / 右详情 */}
-        <div className="grid min-h-0 flex-1 grid-cols-[340px_1fr]">
-          <div className="overflow-auto border-r border-border p-1.5">
+        <div className="observe-error-panes grid min-h-0 flex-1 grid-cols-[340px_1fr]">
+          <div className="observe-error-list overflow-auto border-r border-border p-1.5">
             {listError && <div className="p-4 text-[12px] text-danger" role="alert">{listError}</div>}
             {sections.map((section) => (
               <div key={section.key}>
@@ -457,13 +459,15 @@ function ErrorDrill({
                   </div>
                 )}
                 {section.items.map((g) => (
-                  <ErrorRow key={g.fingerprint} g={g} active={g.fingerprint === selFp} onClick={() => setSelFp(g.fingerprint)} ui={ui} />
+                  <ErrorRow key={g.fingerprint} g={g} active={g.fingerprint === selFp} onClick={(event) => { listTriggerRef.current = event.currentTarget; setSelFp(g.fingerprint); setReadingDetail(true); }} ui={ui} />
                 ))}
               </div>
             ))}
             {!listError && sections.length === 0 && <div className="p-6 text-[12.5px] text-muted">所选区间内没有错误。</div>}
           </div>
 
+          <div className="observe-error-reading">
+            <button ref={detailBackRef} type="button" className="observe-error-back" onClick={() => setReadingDetail(false)}>‹ 错误列表</button>
           {detailError ? (
             <div className="grid place-items-center p-6 text-[13px] text-danger" role="alert">{detailError}</div>
           ) : detail ? (
@@ -479,8 +483,9 @@ function ErrorDrill({
               ui={ui}
             />
           ) : (
-            <div className="grid place-items-center text-[13px] text-muted">选择左侧一个错误查看现场</div>
+            <div className="grid place-items-center text-[13px] text-muted">选择一个错误查看现场</div>
           )}
+          </div>
         </div>
       </div>
     </>
@@ -495,7 +500,7 @@ function ErrorRow({
 }: {
   g: GErrGroup;
   active: boolean;
-  onClick: () => void;
+  onClick: MouseEventHandler<HTMLButtonElement>;
   ui: WorkbenchUi;
 }): ReactElement {
   const tone = _severity(g.count, g.is_spiking);
@@ -556,11 +561,11 @@ function ErrorDetail({
   const activeVariant = detail.variants[variant] ?? detail.variants[0];
   const { Chip, TrendChart } = ui;
   return (
-    <div className="flex min-h-0 flex-col">
+    <div className="observe-error-detail flex min-h-0 flex-col">
       {/* hero */}
       <div className="border-b border-border px-5 py-4">
         <div className="font-mono text-[19px] font-semibold">{detail.error_type}</div>
-        <div className="mt-1.5 font-mono text-[12px] leading-relaxed text-danger">{detail.message}</div>
+        <p className="observe-error-message mt-1.5 font-mono text-danger">{detail.message}</p>
         <div className="mt-3 flex flex-wrap gap-1.5">
           <Chip>{detail.logger_name}</Chip>
           <Chip>来源 · {SOURCE_LABEL[detail.source] ?? detail.source}</Chip>
@@ -571,7 +576,7 @@ function ErrorDetail({
       </div>
 
       {/* 爆炸半径 */}
-      <div className="grid grid-cols-4 gap-px border-b border-border bg-border">
+      <div className="observe-error-metrics grid grid-cols-4 gap-px border-b border-border bg-border">
         <Blast label="累计次数" value={String(detail.count)} />
         <Blast label="独立 session" value={String(detail.sessions)} />
         <Blast label="首次" value={_shortTs(detail.first_ts)} small />
@@ -579,7 +584,7 @@ function ErrorDetail({
       </div>
 
       {/* 分段 */}
-      <div className="flex gap-1 border-b border-border px-5 pt-3">
+      <div className="observe-error-tabs flex gap-1 border-b border-border px-5 pt-3">
         <TabBtn active={tab === "trend"} onClick={() => setTab("trend")}>趋势</TabBtn>
         <TabBtn active={tab === "trace"} onClick={() => setTab("trace")}>
           Traceback{detail.variants.length > 1 ? ` · ${detail.variants.length} 变体` : ""}
@@ -587,7 +592,7 @@ function ErrorDetail({
         <TabBtn active={tab === "occ"} onClick={() => setTab("occ")}>现场 · {detail.occurrences.length}</TabBtn>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
+      <div className="observe-error-body min-h-0 flex-1 overflow-auto px-5 py-4">
         {tab === "trend" && (
           <TrendChart
             data={detail.trend.map((p) => ({ label: _bucketLabel(p.bucket), value: p.count }))}
@@ -600,7 +605,7 @@ function ErrorDetail({
         {tab === "trace" && (
           <div>
             {detail.variants.length > 1 && (
-              <div className="mb-3 flex gap-2">
+              <div className="observe-error-variants mb-3 flex flex-wrap gap-2">
                 {detail.variants.map((v, i) => (
                   <button
                     key={v.fingerprint}
@@ -622,7 +627,7 @@ function ErrorDetail({
           <div className="flex flex-col gap-2">
             {detail.occurrences.length === 0 && <div className="text-[12px] text-muted">无可关联的 session 现场。</div>}
             {detail.occurrences.map((o) => (
-              <div key={o.session_key} className="grid grid-cols-[auto_1fr_auto] items-center gap-3.5 border-b border-border bg-bg px-3.5 py-2.5">
+              <div key={o.session_key} className="observe-error-occurrence grid grid-cols-[auto_1fr_auto] items-center gap-3.5 border-b border-border bg-bg px-3.5 py-2.5">
                 <span className="font-mono text-[11px] text-accent">{_shortTs(o.ts)}</span>
                 <div className="min-w-0">
                   <div className="truncate text-[12px]">{o.user_preview || "（无用户消息）"}</div>
@@ -642,7 +647,7 @@ function ErrorDetail({
       </div>
 
       {/* 操作 */}
-      <div className="flex flex-shrink-0 gap-2 border-t border-border px-5 py-3">
+      <div className="observe-error-actions flex flex-shrink-0 gap-2 border-t border-border px-5 py-3">
         <button
           type="button"
           onClick={() => detail.occurrences[0] && onGoto(detail.occurrences[0].session_key)}
@@ -816,11 +821,11 @@ function ObserveMain({ dispatch }: { dispatch: WorkbenchDispatch }): ReactElemen
       <div
         ref={overviewRef}
         aria-hidden={drillOpen || undefined}
-        className="flex flex-col gap-5 p-6 transition-opacity duration-150"
+        className="observe-overview flex flex-col gap-5 p-6 transition-opacity duration-150"
         style={drillOpen ? { opacity: 0.35, pointerEvents: "none" } : undefined}
       >
         {/* header + range switcher */}
-        <div className="flex items-end justify-between">
+        <div className="observe-overview-header flex items-end justify-between">
           <div>
             <div className="flex items-center gap-2.5">
               <span className="detail-title">Observe · 监测</span>
