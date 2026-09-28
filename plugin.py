@@ -8,9 +8,9 @@ from typing import Literal, cast
 
 from agent.plugin_composition import (
     Context,
-    MobileUiDefinition,
-    MobileUiNavigation,
-    MobileUiRpcInvalidRequest,
+    PluginUiDefinition,
+    PluginUiNavigation,
+    PluginUiRpcInvalidRequest,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
     UI_SLOTS,
@@ -28,7 +28,7 @@ from .contracts import (
     TURN_PROJECTION,
 )
 from .dashboard import ObserveDashboardReader
-from .mobile_kvcache import KVCacheDashboardReader
+from .plugin_ui_kvcache import KVCacheDashboardReader
 from .retention import run_retention_if_needed
 from .projection import run_projection
 from .writer import TraceWriter
@@ -53,7 +53,7 @@ workspace_roots = ("observe",)
 
 
 async def apply(ctx: Context) -> None:
-    """启动 owner 历史投影、错误采集、Dashboard 与移动端查询。"""
+    """启动 owner 历史投影、错误采集、Dashboard 与插件界面查询。"""
 
     await ctx.require(UI).register(
         ctx, web="web_module.js",
@@ -121,15 +121,15 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.on(RUNTIME_STARTED, start_projection)
     _ = await ctx.on(RUNTIME_STOPPING, stop_projection)
 
-    # 4. Mobile 只读查询和静态资源绑定同一 generation Effect。
-    def mobile_query(
+    # 4. 插件界面只读查询和静态资源绑定同一 generation Effect。
+    def plugin_ui_query(
         method: str,
         payload: dict[str, object],
         *,
         session_id: str | None,
         turn_id: str | None,
     ) -> dict[str, object]:
-        return _mobile_ui_query(
+        return _plugin_ui_query(
             observe_root,
             method,
             payload,
@@ -137,22 +137,22 @@ async def apply(ctx: Context) -> None:
             turn_id=turn_id,
         )
 
-    await ctx.require(UI_SLOTS).register_mobile(
+    await ctx.require(UI_SLOTS).register_plugin_ui(
         ctx,
-        MobileUiDefinition(
-            module="mobile_panel.js",
-            stylesheet="mobile_panel.css",
-            navigation=MobileUiNavigation(
+        PluginUiDefinition(
+            module="plugin_ui.js",
+            stylesheet="plugin_ui.css",
+            navigation=PluginUiNavigation(
                 label="Observe",
                 description="缓存效率与运行健康",
             ),
             slots=("turn.after_answer",),
         ),
-        query=mobile_query,
+        query=plugin_ui_query,
     )
 
 
-def _mobile_ui_query(
+def _plugin_ui_query(
     observe_root: Path,
     method: str,
     payload: dict[str, object],
@@ -160,7 +160,7 @@ def _mobile_ui_query(
     session_id: str | None,
     turn_id: str | None,
 ) -> dict[str, object]:
-    """返回 Observe 自有的移动端只读投影。"""
+    """返回 Observe 自有的Web 插件界面只读投影。"""
 
     # 1. 在插件 RPC 边界校验方法与查询参数。
     _ = turn_id
@@ -170,42 +170,42 @@ def _mobile_ui_query(
         "health.snapshot",
         "health.error_detail",
     }:
-        raise MobileUiRpcInvalidRequest(f"未知 observe 移动方法: {method}")
+        raise PluginUiRpcInvalidRequest(f"未知 observe 插件界面方法: {method}")
     if method.startswith("health."):
-        return _mobile_health_query(method, payload, observe_root)
+        return _ui_health_query(method, payload, observe_root)
     reader = KVCacheDashboardReader(observe_root)
     if method == "kvcache.bootstrap":
         return cast("dict[str, object]", reader.get_bootstrap())
     if method == "kvcache.message_usage":
-        message_id = _required_mobile_string(payload, "message_id")
+        message_id = _required_ui_string(payload, "message_id")
         if session_id is None:
-            raise MobileUiRpcInvalidRequest("kvcache.message_usage 缺少 session_id")
+            raise PluginUiRpcInvalidRequest("kvcache.message_usage 缺少 session_id")
         usage = reader.get_message_usage(
             message_id=message_id,
             session_key=session_id,
         )
         return {"usage": usage}
-    raise AssertionError(f"未处理的 observe 移动方法: {method}")
+    raise AssertionError(f"未处理的 observe 插件界面方法: {method}")
 
 
-def _mobile_health_query(
+def _ui_health_query(
     method: str,
     payload: dict[str, object],
     observe_root: Path,
 ) -> dict[str, object]:
-    """把 Observe 错误聚合裁成手机排障所需的只读投影。"""
+    """把 Observe 错误聚合裁成Web 排障所需的只读投影。"""
 
     # 1. 复用桌面聚合 owner，只在 RPC 边界限制时间范围和载荷体积。
-    range_token = _mobile_range_value(payload)
+    range_token = _ui_range_value(payload)
     reader = ObserveDashboardReader(observe_root)
     if method == "health.snapshot":
-        result = reader.get_mobile_global_health(range_token, limit=50)
+        result = reader.get_ui_global_health(range_token, limit=50)
         raw_items = cast("list[dict[str, object]]", result["items"])
         return {
             "range": range_token,
             "items": cast(
                 "list[object]",
-                [_mobile_error_summary(item) for item in raw_items],
+                [_ui_error_summary(item) for item in raw_items],
             ),
             "types": int(result["types"]),
             "total": int(result["total"]),
@@ -214,21 +214,21 @@ def _mobile_health_query(
         }
 
     # 2. 详情按用户展开时再读取，列表不搬运 traceback 和 occurrence。
-    fingerprint = _required_mobile_string(payload, "fingerprint")
-    detail = reader.get_mobile_global_detail(fingerprint, range_token)
+    fingerprint = _required_ui_string(payload, "fingerprint")
+    detail = reader.get_ui_global_detail(fingerprint, range_token)
     if not detail:
         return {"error": None}
-    return {"error": _mobile_error_detail(detail)}
+    return {"error": _ui_error_detail(detail)}
 
 
-def _mobile_range_value(payload: dict[str, object]) -> Literal["24h", "7d"]:
+def _ui_range_value(payload: dict[str, object]) -> Literal["24h", "7d"]:
     value = payload.get("range", "24h")
     if not isinstance(value, str) or value not in {"24h", "7d"}:
-        raise MobileUiRpcInvalidRequest("range 只支持 24h 或 7d")
+        raise PluginUiRpcInvalidRequest("range 只支持 24h 或 7d")
     return cast("Literal['24h', '7d']", value)
 
 
-def _mobile_error_summary(item: dict[str, object]) -> dict[str, object]:
+def _ui_error_summary(item: dict[str, object]) -> dict[str, object]:
     return {
         "fingerprint": str(item["fingerprint"]),
         "error_type": str(item["error_type"]),
@@ -244,8 +244,8 @@ def _mobile_error_summary(item: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _mobile_error_detail(item: dict[str, object]) -> dict[str, object]:
-    result = _mobile_error_summary(item)
+def _ui_error_detail(item: dict[str, object]) -> dict[str, object]:
+    result = _ui_error_summary(item)
     traceback_text = str(item.get("traceback_text") or "")
     result.update(
         {
@@ -256,8 +256,8 @@ def _mobile_error_detail(item: dict[str, object]) -> dict[str, object]:
     return result
 
 
-def _required_mobile_string(payload: dict[str, object], name: str) -> str:
+def _required_ui_string(payload: dict[str, object], name: str) -> str:
     value = payload.get(name)
     if not isinstance(value, str) or not value or len(value) > 512:
-        raise MobileUiRpcInvalidRequest(f"{name} 必须是 1 到 512 字符的字符串")
+        raise PluginUiRpcInvalidRequest(f"{name} 必须是 1 到 512 字符的字符串")
     return value

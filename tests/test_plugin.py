@@ -92,7 +92,7 @@ from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
 api_version = 3
 name = "owners"
 version = "1.0.0"
-inject = ()
+inject = (OWNER_STATE,)
 CALLS = {
  "call-1": {"id":"call-1","state":"success","binding":{"model":"test-model"},"request_digest":"a","started_at":"2026-09-08 00:00:00","finished_at":"2026-09-08 00:00:01","first_token_ms":10.0,"duration_ms":20.0,"failure":None,"usage":{"input_tokens":100,"cache_write_input_tokens":0,"cached_input_tokens":80,"output_tokens":20,"reasoning_output_tokens":0,"request_count":1,"covered_request_count":1,"coverage":"exact"}},
  "call-2": {"id":"call-2","state":"success","binding":{"model":"test-model"},"request_digest":"b","started_at":"2026-09-08 00:00:01","finished_at":"2026-09-08 00:00:02","first_token_ms":11.0,"duration_ms":21.0,"failure":None,"usage":{"input_tokens":120,"cache_write_input_tokens":0,"cached_input_tokens":90,"output_tokens":30,"reasoning_output_tokens":0,"request_count":1,"covered_request_count":1,"coverage":"exact"}},
@@ -360,7 +360,7 @@ def test_kvcache_bootstrap_fails_loudly_on_projection_drift(tmp_path: Path) -> N
     finally:
         connection.close()
     with pytest.raises(RuntimeError, match="投影水位不一致"):
-        module._mobile_ui_query(
+        module._plugin_ui_query(
             tmp_path / "observe", "kvcache.bootstrap", {}, session_id=None, turn_id=None
         )
 
