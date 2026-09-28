@@ -8,7 +8,7 @@ import threading
 
 
 class KVCacheDashboardReader:
-    """从 observe 数据库读取桌面与移动端共用的 KV Cache 投影。"""
+    """从 observe 数据库读取Dashboard 与 Web 插件界面共用的 KV Cache 投影。"""
 
     def __init__(self, observe_root: Path) -> None:
         self.db_path = observe_root / "observe.db"
@@ -24,7 +24,7 @@ class KVCacheDashboardReader:
         return _summary_from_row(row)
 
     def get_bootstrap(self) -> dict[str, Any]:
-        """在一个 SQLite 快照中返回移动首屏的聚合与两组最近记录。"""
+        """在一个 SQLite 快照中返回界面首屏的聚合与两组最近记录。"""
 
         if not self.db_path.exists():
             empty = _summary_from_row(None)
