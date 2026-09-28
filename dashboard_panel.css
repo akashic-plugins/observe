@@ -1,0 +1,49 @@
+@tailwind utilities;
+
+.observe-error-dialog { width: min(1180px, 94vw); height: min(84vh, 760px); left: 50%; top: 50%; transform: translate(-50%, -50%); }
+.observe-error-reading { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.observe-error-detail { flex: 1; min-width: 0; }
+.observe-error-back { display: none; }
+.observe-error-message { margin: 6px 0 0; font-size: 16px; line-height: 1.55; overflow-wrap: anywhere; }
+.observe-error-actions { flex-wrap: wrap; }
+
+/* 列表、详情各占完整阅读区；不把桌面双栏缩小塞进手机。 */
+@media (max-width: 760px) {
+  .observe-overview { padding: 16px; }
+  .observe-overview-header { align-items: start; flex-direction: column; gap: 16px; }
+  .observe-overview-header > div { min-width: 0; max-width: 100%; flex-wrap: wrap; }
+  .observe-overview-header > div > div { min-width: 0; max-width: 100%; flex-wrap: wrap; }
+  .observe-overview section[aria-label="运行状态"] { align-items: start; flex-direction: column; }
+  .observe-overview button,
+  .observe-error-dialog button { min-height: 44px; font-size: 14px; }
+  .observe-overview p { font-size: 14px; line-height: 1.5; }
+  .observe-error-dialog.observe-error-dialog {
+    inset: calc(var(--shell-band-height, 48px) + env(safe-area-inset-top, 0px)) 0 0;
+    width: 100%;
+    height: auto;
+    margin: 0;
+    transform: none;
+    border-radius: 0;
+    overflow: auto;
+  }
+  .observe-error-header { gap: 12px; padding: 12px; }
+  .observe-error-header > div > div { flex-wrap: wrap; }
+  .observe-error-filters { flex-direction: column; align-items: stretch; padding: 12px; }
+  .observe-error-filters input { width: 100%; min-width: 0; min-height: 44px; font-size: 16px; }
+  .observe-error-panes { display: block; flex: none; overflow: visible; }
+  .observe-error-list { overflow: visible; border: 0; }
+  .observe-error-reading { display: none; }
+  .observe-error-dialog.is-reading .observe-error-list,
+  .observe-error-dialog.is-reading .observe-error-filters { display: none; }
+  .observe-error-dialog.is-reading .observe-error-reading { display: flex; }
+  .observe-error-back { display: block; padding: 10px 16px; text-align: start; border-bottom: 1px solid var(--ak-rule-subtle); }
+  .observe-error-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .observe-error-tabs { flex-wrap: wrap; padding-inline: 12px; }
+  .observe-error-body { overflow: visible; padding: 16px 12px; }
+  .observe-error-occurrence { grid-template-columns: auto minmax(0, 1fr); }
+  .observe-error-occurrence button { grid-column: 2; justify-self: start; }
+  .observe-error-occurrence > div { overflow-wrap: anywhere; }
+  .observe-error-body pre { max-width: 100%; font-size: 13px; }
+  .observe-error-actions { padding: 12px; }
+  .observe-error-detail > div:first-child { padding: 16px 12px; overflow-wrap: anywhere; }
+}
