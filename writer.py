@@ -1,6 +1,6 @@
 """异步 TraceWriter：把 TurnTrace / RagQueryLog 写入 SQLite。
 
-非阻塞：调用方用 emit() put_nowait，后台 task 消费队列写 DB。
+非阻塞：后台 task 消费原队列，专有线程执行 SQLite 与序列化。
 Queue 满时 drop + 计数，不崩溃主循环。
 """
 
@@ -10,9 +10,11 @@ import asyncio
 import json
 import logging
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 
 from .db import open_db
@@ -65,6 +67,9 @@ class TraceWriter:
         self._db_path = db_path
         self._queue: asyncio.Queue[QueueItem] = asyncio.Queue(maxsize=_QUEUE_MAX)
         self._dropped = 0
+        self._opened: asyncio.Future[None] | None = None
+        self._executor: ThreadPoolExecutor | None = None
+        self._connection: sqlite3.Connection | None = None
 
     # ── 公共接口 ─────────────────────────────────
 
@@ -81,10 +86,12 @@ class TraceWriter:
         """非阻塞 emit。Queue 满时 drop 并记录计数。"""
         try:
             self._queue.put_nowait((event, None))
-        except asyncio.QueueFull:
+        except (asyncio.QueueFull, asyncio.QueueShutDown) as error:
             self._dropped += 1
             if self._dropped % 100 == 1:
-                logger.warning("observe queue full, total_dropped=%d", self._dropped)
+                logger.warning("observe queue %s, total_dropped=%d",
+                               "closed" if isinstance(error, asyncio.QueueShutDown) else "full",
+                               self._dropped)
 
     async def submit(self, event: TraceEvent) -> None:
         """为耐久投影提供背压和事务完成确认。"""
@@ -95,6 +102,16 @@ class TraceWriter:
     async def drain(self) -> None:
         """等待已入队事件写入完成。"""
         await self._queue.join()
+
+    def _open_result(self) -> asyncio.Future[None]:
+        if self._opened is None:
+            self._opened = asyncio.get_running_loop().create_future()
+            self._opened.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+        return self._opened
+
+    async def wait_ready(self) -> None:
+        """等待本 writer 的 schema 初始化回执，失败不发布假就绪。"""
+        await asyncio.shield(self._open_result())
 
     async def pending_recalls(self, keys: Iterable[str]) -> set[str]:
         """从同一连接读取已提交回执，返回尚未完成的召回身份。"""
@@ -107,60 +124,144 @@ class TraceWriter:
             pending.update(await done)
         return pending
 
-    async def run(self) -> None:
-        """后台循环，持续消费队列写 DB。作为 asyncio task 运行。"""
-        conn = open_db(self._db_path)
-        logger.info("observe writer started: %s", self._db_path)
+    async def _io[T](self, operation: Callable[[], T]) -> tuple[T, asyncio.CancelledError | None]:
+        """在自身线程执行一项物理工作，取消也取回其实际结果。"""
+        assert self._executor is not None
+        work = asyncio.get_running_loop().run_in_executor(self._executor, operation)
+        cancelled: asyncio.CancelledError | None = None
+        while not work.done():
+            try:
+                await asyncio.shield(work)
+            except asyncio.CancelledError as error:
+                cancelled = error
+                self._queue.shutdown()
+            except Exception:
+                break
         try:
+            result = work.result()
+        except Exception as error:
+            if cancelled is not None:
+                raise BaseExceptionGroup("Observe I/O 取消且物理工作失败", [cancelled, error]) from None
+            raise
+        return result, cancelled
+
+    async def initialize(self) -> None:
+        """在资源 Effect 中准备连接，受管后台任务不承担插件就绪前置条件。"""
+        if self._executor is not None:
+            await self.wait_ready()
+            return
+        opened = self._open_result()
+        if opened.done():
+            raise RuntimeError("Observe writer 已结束，不能重新打开")
+        # 1. 一个 writer 独占一条物理线程；不占用前台文件名额。
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="observe-db")
+        try:
+            self._connection, cancelled = await self._io(partial(open_db, self._db_path))
+            if cancelled is not None:
+                raise cancelled
+        except BaseException as error:
+            opened.set_exception(error)
+            self._queue.shutdown()
+            try:
+                await self.close()
+            except BaseException as cleanup_error:
+                raise BaseExceptionGroup("Observe 初始化与资源关闭均失败", [error, cleanup_error]) from None
+            raise
+        opened.set_result(None)
+        logger.info("observe writer started: %s", self._db_path)
+
+    async def close(self) -> None:
+        """排空物理操作后关闭连接；Task 与 Effect 可幂等请求同一资源清理。"""
+        self._queue.shutdown()
+        executor = self._executor
+        if executor is None:
+            return
+        cancelled = None
+        if self._connection is not None:
+            _, cancelled = await self._io(self._connection.close)
+            self._connection = None
+        executor.shutdown(wait=True)
+        self._executor = None
+        logger.info("observe writer stopped")
+        if cancelled is not None:
+            raise cancelled
+
+    async def run(self) -> None:
+        """串行消费原队列，真实事务结束后在 loop 确认，停止时排空。"""
+        cancelled: asyncio.CancelledError | None = None
+        failure: BaseException | None = None
+        try:
+            await self.initialize()
+            conn = self._connection
+            assert conn is not None
+            # 2. Future 和队列只在 loop 操作，worker 只拿数据与连接。
             while True:
-                item = await self._queue.get()
                 try:
-                    self._process(conn, item)
+                    item = await self._queue.get()
+                except asyncio.CancelledError as error:
+                    cancelled = error
+                    self._queue.shutdown()
+                    continue
+                except asyncio.QueueShutDown:
+                    break
+                done = item.done if isinstance(item, _PendingRecalls) else item[1]
+                try:
+                    if isinstance(item, _PendingRecalls):
+                        pending, stopped = await self._io(partial(self._read_pending_recalls, conn, item.keys))
+                        if not item.done.done():
+                            item.done.set_result(pending)
+                    else:
+                        _, stopped = await self._io(partial(self._write_one, conn, item[0]))
+                        if item[1] is not None and not item[1].done():
+                            item[1].set_result(None)
+                    if stopped is not None:
+                        cancelled = stopped
+                except BaseException as error:
+                    kind = type(item).__name__ if isinstance(item, _PendingRecalls) else type(item[0]).__name__
+                    logger.exception("observe I/O failed for %s", kind)
+                    if done is not None and not done.done():
+                        done.set_exception(error)
+                    if not isinstance(error, Exception):
+                        raise
+                    if isinstance(item, _PendingRecalls) and not isinstance(error, sqlite3.Error):
+                        raise
                 finally:
                     self._queue.task_done()
-        finally:
-            # flush remaining on shutdown
-            while not self._queue.empty():
+        except BaseException as error:
+            failure = error
+            # 初始化或程序错误必须拒绝剩余等待者，不能遗留永远等待的确认。
+            self._queue.shutdown()
+            while True:
                 try:
                     item = self._queue.get_nowait()
-                except asyncio.QueueEmpty:
+                except (asyncio.QueueEmpty, asyncio.QueueShutDown):
                     break
-                try:
-                    self._process(conn, item)
-                finally:
-                    self._queue.task_done()
-            conn.close()
-            logger.info("observe writer stopped")
+                done = item.done if isinstance(item, _PendingRecalls) else item[1]
+                if done is not None and not done.done():
+                    done.set_exception(error)
+                self._queue.task_done()
+            raise
+        finally:
+            # 3. 队列停止接纳、原工作结束后，才归还物理连接与线程。
+            try:
+                await self.close()
+            except BaseException as cleanup_error:
+                if failure is not None:
+                    raise BaseExceptionGroup("Observe 运行与资源关闭均失败", [failure, cleanup_error]) from None
+                raise
+        if cancelled is not None:
+            raise cancelled
 
     # ── 内部写入 ─────────────────────────────────
 
-    def _process(self, conn: sqlite3.Connection, item: QueueItem) -> None:
-        """由连接 owner 执行排队请求，并把真实结果交回调用者。"""
-        if isinstance(item, _PendingRecalls):
-            try:
-                placeholders = ",".join("?" for _ in item.keys)
-                rows = conn.execute(
-                    "SELECT identity FROM projection_receipts WHERE domain='akasha' "
-                    f"AND identity IN ({placeholders})", item.keys,
-                ).fetchall()
-                pending = set(item.keys).difference(row[0] for row in rows)
-            except sqlite3.Error as error:
-                if not item.done.done():
-                    item.done.set_exception(error)
-            else:
-                if not item.done.done():
-                    item.done.set_result(pending)
-            return
-        event, done = item
-        try:
-            self._write_one(conn, event)
-        except Exception as error:
-            logger.exception("observe write failed for %s", type(event).__name__)
-            if done is not None and not done.done():
-                done.set_exception(error)
-        else:
-            if done is not None and not done.done():
-                done.set_result(None)
+    def _read_pending_recalls(self, conn: sqlite3.Connection, keys: tuple[str, ...]) -> set[str]:
+        """在同一 writer 连接读取已提交身份，不访问 loop 的等待者。"""
+        placeholders = ",".join("?" for _ in keys)
+        rows = conn.execute(
+            "SELECT identity FROM projection_receipts WHERE domain='akasha' "
+            f"AND identity IN ({placeholders})", keys,
+        ).fetchall()
+        return set(keys).difference(row[0] for row in rows)
 
     def _write_one(
         self,

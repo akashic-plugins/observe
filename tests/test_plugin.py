@@ -425,11 +425,13 @@ def _model_trace(identity: str):
     )
 
 
-def _running_writer(db_path: Path):
+async def _running_writer(db_path: Path):
     """使用真实队列消费者和 SQLite 回执。"""
     writer_type = sys.modules[f"{module.__name__}.writer"].TraceWriter
     writer = writer_type(db_path)
-    return writer, asyncio.create_task(writer.run())
+    task = asyncio.create_task(writer.run())
+    await writer.wait_ready()
+    return writer, task
 
 
 def test_projection_cursor_closes_connection_on_success_and_error(
@@ -487,7 +489,7 @@ async def test_projection_yields_across_sessions_without_closed_turns(
 ) -> None:
     projection = sys.modules[f"{module.__name__}.projection"]
     db_path = tmp_path / "observe.db"
-    writer, writer_task = _running_writer(db_path)
+    writer, writer_task = await _running_writer(db_path)
     now = datetime(2026, 9, 8, tzinfo=timezone.utc)
     messages = {
         f"s{index:02d}": Message(
@@ -582,7 +584,7 @@ async def test_message_prefix_yields_before_decoding_next_page(
 
     monkeypatch.setattr(log, "_decode", checked_decode)
     db_path = tmp_path / "observe.db"
-    writer, writer_task = _running_writer(db_path)
+    writer, writer_task = await _running_writer(db_path)
     task = asyncio.create_task(projection.project_messages(
         log.catalog(), TurnProjection(), lambda _id: {}, lambda _id: "",
         writer, db_path, heads={"s": head},
@@ -643,7 +645,7 @@ async def test_projection_tracks_each_session_only_after_success(
             content=_checks(),
         ).append(f"{session_id}-0", Output((ContentPart("text", "answer"),), "complete"))
     db_path = tmp_path / "observe.db"
-    writer, writer_task = _running_writer(db_path)
+    writer, writer_task = await _running_writer(db_path)
     round_number = 0
     reads: list[tuple[int, str]] = []
     catalog = log.catalog()
@@ -701,7 +703,7 @@ async def test_projection_tracks_each_session_only_after_success(
 async def test_projection_yields_between_memory_history_pages(tmp_path: Path) -> None:
     projection = sys.modules[f"{module.__name__}.projection"]
     db_path = tmp_path / "observe.db"
-    writer, writer_task = _running_writer(db_path)
+    writer, writer_task = await _running_writer(db_path)
     peer_ran = False
     rows = tuple(
         {
@@ -736,7 +738,7 @@ async def test_projection_yields_between_memory_history_pages(tmp_path: Path) ->
 async def test_projection_yields_inside_one_akasha_recall(tmp_path: Path) -> None:
     projection = sys.modules[f"{module.__name__}.projection"]
     db_path = tmp_path / "observe.db"
-    writer, writer_task = _running_writer(db_path)
+    writer, writer_task = await _running_writer(db_path)
     peer_ran = False
     calls = 0
     hit = SimpleNamespace(session_id="s", message_ids=("message",), score=0.8)
@@ -783,7 +785,7 @@ async def test_completed_recall_is_not_reread_after_restart_or_retention(tmp_pat
     projection = sys.modules[f"{module.__name__}.projection"]
     retention = sys.modules[f"{module.__name__}.retention"]
     db_path = tmp_path / "observe.db"
-    writer, writer_task = _running_writer(db_path)
+    writer, writer_task = await _running_writer(db_path)
     reads = 0
     recall = SimpleNamespace(
         hits=(SimpleNamespace(session_id="s", message_ids=("message",), score=0.8),),
@@ -808,7 +810,7 @@ async def test_completed_recall_is_not_reread_after_restart_or_retention(tmp_pat
         with pytest.raises(asyncio.CancelledError):
             await writer_task
     await asyncio.to_thread(retention._run_cleanup, db_path)
-    writer, writer_task = _running_writer(db_path)
+    writer, writer_task = await _running_writer(db_path)
     try:
         await projection.project_akasha(records, catalog, writer)
         assert reads == 1
@@ -834,7 +836,7 @@ async def test_recall_receipt_failure_is_retryable(tmp_path: Path, failure: str)
     """回执查询或投影事务失败都不得确认完成，恢复后仍能重试。"""
     projection = sys.modules[f"{module.__name__}.projection"]
     db_path = tmp_path / "observe.db"
-    writer, writer_task = _running_writer(db_path)
+    writer, writer_task = await _running_writer(db_path)
     recall = SimpleNamespace(
         hits=(), presented_message_ids=(),
         source=SimpleNamespace(kind="program", query="retry"),
@@ -879,7 +881,7 @@ async def test_projection_cancellation_does_not_record_unfinished_recall(
 ) -> None:
     projection = sys.modules[f"{module.__name__}.projection"]
     db_path = tmp_path / "observe.db"
-    writer, writer_task = _running_writer(db_path)
+    writer, writer_task = await _running_writer(db_path)
     hit = SimpleNamespace(session_id="s", message_ids=("message",), score=0.8)
     recall = SimpleNamespace(
         hits=(hit,) * 128, presented_message_ids=(),
@@ -1063,7 +1065,7 @@ async def test_turn_cursor_limits_decoding_and_replays_abandon(tmp_path, monkeyp
     inputs.append('open', Input((ContentPart('text', 'keep'),)))
     writer_for(Control).append('stop', Control('abandon', call.seq))
     db_path = tmp_path / 'observe.db'
-    writer, job = _running_writer(db_path)
+    writer, job = await _running_writer(db_path)
     async def project():
         await projection.project_messages(log.catalog(), TurnProjection(), lambda _: {},
                                           lambda _: 'tool', writer, db_path)

@@ -41,10 +41,12 @@ jobs:
         run: cd tests && ../.venv/bin/python -m pytest -q .
       - name: Verify plugin UI behavior
         run: node --test tests/test_plugin_ui.mjs
+      - name: Verify physical writer settlement
+        run: .venv/bin/python tests/check_writer_io.py --core .akashic-core
       - name: Check v3 source types
         env:
           PYTHONPATH: .akashic-core:${{ github.workspace }}/.akashic-core/sdk/python/src
-        run: .venv/bin/pyright --pythonpath .venv/bin/python --level error plugin.py collector.py dashboard.py
+        run: .venv/bin/pyright --pythonpath .venv/bin/python --level error plugin.py collector.py dashboard.py writer.py db.py
       - name: Compile Python sources
         run: python -m compileall -q .
       - name: Check diff formatting

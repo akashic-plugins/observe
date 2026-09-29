@@ -69,6 +69,10 @@ async def apply(ctx: Context) -> None:
     observe_root = ctx.workspace_root("observe")
     db_path = observe_root / "observe.db"
     writer = TraceWriter(db_path)
+    async def setup_writer():
+        await writer.initialize()
+        return writer.close
+    _ = await ctx.effect(setup_writer, label="observe_database")
     _ = await ctx.spawn(writer.run(), name="observe_writer")
     _ = await ctx.spawn(
         run_retention_if_needed(db_path),

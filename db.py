@@ -304,12 +304,20 @@ def open_db(db_path: Path) -> sqlite3.Connection:
     """打开（或新建）observe.db，初始化 schema，返回连接。"""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
-    _ = conn.executescript(_SCHEMA_SQL)
-    _ensure_turns_columns(conn)
-    _ensure_rag_columns(conn)
-    _ensure_memory_columns(conn)
-    _ensure_projection_receipts(conn)
-    _migrate_removed_proactive_observe(conn)
-    _ensure_kv_cache_projection(conn)
-    conn.commit()
+    try:
+        _ = conn.executescript(_SCHEMA_SQL)
+        _ensure_turns_columns(conn)
+        _ensure_rag_columns(conn)
+        _ensure_memory_columns(conn)
+        _ensure_projection_receipts(conn)
+        _migrate_removed_proactive_observe(conn)
+        _ensure_kv_cache_projection(conn)
+        conn.commit()
+    except BaseException as error:
+        # 失败回执保留异常，不保留尚未交给调用者的活连接。
+        try:
+            conn.close()
+        except Exception as cleanup_error:
+            raise BaseExceptionGroup("Observe 初始化与连接关闭均失败", [error, cleanup_error]) from None
+        raise
     return conn
