@@ -11,6 +11,7 @@ from contextlib import AbstractAsyncContextManager, closing
 from pathlib import Path
 from typing import Any, cast
 
+from core.common.file_io import run_file_io
 from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import (
     CallRef,
@@ -210,39 +211,36 @@ async def project_messages(
     heads: Mapping[str, int] | None = None,
 ) -> None:
     """分批读取固定 Session 前缀，只提交 cursor 后新闭合的 Turn。"""
-    scanned_without_submit = 0
     for session_id, head in (
         catalog.snapshot_heads() if heads is None else heads
     ).items():
-        # 读取调度属于异步消费者；不能先同步解码全部历史再让出执行权。
         reader = catalog.reader(session_id)
-        messages: list[Message] = []
-        cursor = -1
-        while cursor < head:
-            page = reader.read(after_seq=cursor, through_seq=head, limit=64)
-            if not page:
-                break
-            messages.extend(page)
-            cursor = page[-1].seq
-            await asyncio.sleep(0)
-        by_id = {message.message_id: message for message in messages}
-        for source in sorted({message.source for message in messages}):
-            after = _cursor(db_path, session_id, source)
-            for turn in projection.project(messages, source):
-                if turn.status == "open" or turn.through_seq <= after:
-                    scanned_without_submit += 1
-                    if scanned_without_submit >= 64:
-                        await asyncio.sleep(0)
-                        scanned_without_submit = 0
+        for source in sorted(await run_file_io(reader.source_names)):
+            after = await run_file_io(lambda: _cursor(db_path, session_id, source))
+            # 游标用于读取起点；开放尾段由原消息重建，不保留第二份正文缓存。
+            turns = await run_file_io(lambda: reader.scan(
+                lambda rows: projection.project(rows, source, after_seq=after),
+                after_seq=after, through_seq=head, source=source,
+            ))
+            for turn in turns:
+                if turn.status == "open":
                     continue
-                await writer.submit(
-                    _turn_trace(session_id, turn, by_id, read_call, tool_name)
-                )
-                scanned_without_submit = 0
-        scanned_without_submit += 1
-        if scanned_without_submit >= 64:
-            await asyncio.sleep(0)
-            scanned_without_submit = 0
+                identities = (*turn.message_ids, *(identity for _, identity in turn.observations))
+
+                def read_members() -> dict[str, Message]:
+                    members: dict[str, Message] = {}
+                    for identity in identities:
+                        message = reader.get(identity)
+                        if message is None:
+                            raise RuntimeError(f"Observe Turn 引用的消息已不存在: {identity}")
+                        members[identity] = message
+                    return members
+
+                by_id = await run_file_io(read_members)
+                trace = _turn_trace(session_id, turn, by_id, read_call, tool_name)
+                del by_id
+                await writer.submit(trace)
+                del trace
 
 
 async def project_model_calls(
