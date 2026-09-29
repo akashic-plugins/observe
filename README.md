@@ -4,7 +4,7 @@ Akashic 可观测性插件（Plugin API v3），负责投影已提交 Message、
 
 插件只读取各领域 owner 的公开能力：
 
-- `core.message_catalog` 与 `turn.projection.v1`：从完整 Message 前缀得到闭合 Turn；
+- `core.message_catalog` 与 `turn.projection.v1`：按闭合消费边界读取 Message 尾部，得到 Turn 引用；
 - `models.calls.v1` 与 `models.call-history.v1`：保存成功、失败和未确定调用；
 - `akasha.recall-records.v1`：投影真实召回记录与已呈现的 Message；
 - `markdown-memory.writes.v1`：投影 Markdown draft/applied receipt；
@@ -13,7 +13,12 @@ Akashic 可观测性插件（Plugin API v3），负责投影已提交 Message、
 
 Observe DB 保留原有 `turns`、`rag_queries`、`memory_writes` 和 `global_errors` 历史。投影 receipt 使用 owner 的不可变 ID 防止重启重复写；未闭合 Turn 不推进 cursor，后来提交 Output 后仍会被投影。一次 Turn 引用的全部 `model.facts` 都计入用量，未产生 Message 的失败调用也保存在 `model_calls`。
 
-消息投影只重读 head 变化的会话，并在固定上界内分批读取、让出事件循环；完整前缀仍由原 TurnProjection 分段。读取被取消或写入失败时不提前推进成功进度，重启仍依据既有持久 receipt 重建。Observe 不改变 Bridge 的探测、租约或失败语义。
+消息投影只读取 head 变化的会话，并按每个来源的持久 cursor 从上次闭合位置继续。
+固定上界内的扫描在受限 I/O worker 中逐页进行；Turn 分段只保存引用。开放尾段仍从
+原消息恢复，不缓存完整会话。一次只读取一个新闭合 Turn 的正文，生成诊断后立即释放；
+TraceWriter 提交成功才推进原 cursor。崩溃或取消可安全重读，未增加第二套进度或数据库。
+完整重建使用同一投影算法的起点读取；单个 Turn 的诊断正文仍决定该条写入的内存大小。
+该版本要求 Core 的 MessageReader.scan 和 TurnProjection.after_seq 合同，旧 Core 不提供降级路径。
 
 Akasha 投影在读取 Message 正文前，先由 TraceWriter 的同一连接查询既有 receipt，只处理尚未提交的不可变 recall。读取或写入失败不留下完成回执，下一轮仍会重试；不另建进度账本。`rag_queries` 继续保留 90 天，独立 receipt 不随 trace 清理，因此重启或全量枚举不会复活过期记录。`memory_writes` 与既有合同一致，不参与自动 retention。
 

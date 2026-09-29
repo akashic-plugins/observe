@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any, Literal, Protocol
 
@@ -23,7 +23,9 @@ class Turn(Protocol):
 
 
 class TurnProjection(Protocol):
-    def project(self, messages: Sequence[Message], source: str) -> tuple[Turn, ...]: ...
+    def project(
+        self, messages: Iterable[Message], source: str, *, after_seq: int = -1,
+    ) -> tuple[Turn, ...]: ...
 
 
 TURN_PROJECTION = ServiceKey[TurnProjection]("turn.projection.v1")

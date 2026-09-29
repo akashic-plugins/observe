@@ -514,10 +514,14 @@ async def test_projection_yields_across_sessions_without_closed_turns(
         reads += 1
         if reads == 65:
             assert peer_ran
-        return SimpleNamespace(read=lambda **_kwargs: (messages[session_id],))
+        return SimpleNamespace(
+            source_names=lambda: frozenset({'conversation'}),
+            scan=lambda consume, **_kwargs: consume(iter((messages[session_id],))),
+            get=lambda _identity: messages[session_id],
+        )
 
-    def project(rows, _source):
-        message = rows[0]
+    def project(rows, _source, *, after_seq=-1):
+        message = next(iter(rows))
         if isinstance(message.body, Input):
             return ()
         return (
@@ -1039,3 +1043,52 @@ def test_error_fingerprint_normalizes_runtime_numbers() -> None:
     assert collector._fingerprint(
         "ValueError", "bad 123 at 0xabc", "x.py"
     ) == collector._fingerprint("ValueError", "bad 999 at 0xdef", "x.py")
+
+
+@pytest.mark.asyncio
+async def test_turn_cursor_limits_decoding_and_replays_abandon(tmp_path, monkeypatch):
+    """消费进度限制读集；跨控制位置的开放输入和迟到结果仍归属原 Turn。"""
+    from session.message import Control
+    projection = sys.modules[f"{module.__name__}.projection"]
+    log = MessageLog(tmp_path / 'sessions.db')
+    log.save_binding('tool', {'name': 'tool'})
+    def writer_for(body, call_ref=None):
+        return log.writer('s', author='test', source='conversation', body_types=(body,),
+                          content=_checks(), call_ref=call_ref, check_call=lambda _: None)
+    inputs, outputs = writer_for(Input), writer_for(Output)
+    inputs.append('old', Input((ContentPart('text', 'x' * 65536),)))
+    outputs.append('old-end', Output((), 'complete'))
+    inputs.append('abandoned', Input(()))
+    call = outputs.append('call', Output((ToolCall('tool', {}),), 'continue'))
+    inputs.append('open', Input((ContentPart('text', 'keep'),)))
+    writer_for(Control).append('stop', Control('abandon', call.seq))
+    db_path = tmp_path / 'observe.db'
+    writer, job = _running_writer(db_path)
+    async def project():
+        await projection.project_messages(log.catalog(), TurnProjection(), lambda _: {},
+                                          lambda _: 'tool', writer, db_path)
+    try:
+        await project()
+        consumed = call.seq
+        decode = log._decode
+        decoded = []
+        def checked(row):
+            decoded.append(row['seq'])
+            assert row['seq'] > consumed, '重新解码了已消费历史'
+            return decode(row)
+        monkeypatch.setattr(log, '_decode', checked)
+        ref = CallRef('call', 0)
+        writer_for(ToolResult, ref).append('late', ToolResult(ref, 'success', (ContentPart('text', 'late'),)))
+        outputs.append('answer', Output((ContentPart('text', 'done'),), 'complete'))
+        await project()
+        await project()  # 重复消费不增加行，也不读取已闭合正文。
+        assert decoded
+        with sqlite3.connect(db_path) as db:
+            rows = db.execute('SELECT turn_id,user_msg,tool_calls FROM turns ORDER BY id').fetchall()
+            assert [row[0] for row in rows] == ['old-end', 'stop', 'answer']
+            assert rows[-1][1] == 'keep' and rows[-1][2] is None
+    finally:
+        job.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await job
+        log.close()
