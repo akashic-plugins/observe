@@ -17,6 +17,11 @@ Observe DB 保留原有 `turns`、`rag_queries`、`memory_writes` 和 `global_er
 固定上界内的扫描在受限 I/O worker 中逐页进行；Turn 分段只保存引用。开放尾段仍从
 原消息恢复，不缓存完整会话。一次只读取一个新闭合 Turn 的正文，生成诊断后立即释放；
 TraceWriter 提交成功才推进原 cursor。崩溃或取消可安全重读，未增加第二套进度或数据库。
+TraceWriter 使用自己的一条物理线程串行打开、执行事务和关闭连接，不占用前台文件 worker。
+原 500 项队列提供背压；诊断 emit 在满载或关闭时明确丢弃并计数，submit 只确认真实事务结果。
+停机先停止接纳，再完成已入队项目；重复取消也等待正在执行的数据库操作，最后才关闭连接。
+Future 与队列只在原 loop 操作，线程不访问 Context 或其它 owner 能力。
+插件在启动 retention、投影和查询前等待 writer 的真实 schema 初始化回执；失败不发布就绪。
 完整重建使用同一投影算法的起点读取；单个 Turn 的诊断正文仍决定该条写入的内存大小。
 该版本要求 Core 的 MessageReader.scan 和 TurnProjection.after_seq 合同，旧 Core 不提供降级路径。
 
