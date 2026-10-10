@@ -6,17 +6,10 @@ from importlib import import_module
 from pathlib import Path
 from typing import Literal, cast
 
-from agent.plugin_composition import (
-    Context,
-    PluginUiDefinition,
-    PluginUiNavigation,
-    PluginUiRpcInvalidRequest,
-    RUNTIME_STARTED,
-    RUNTIME_STOPPING,
-    UI_SLOTS,
-)
+from agent.plugin_composition import Context, RUNTIME_STARTED, RUNTIME_STOPPING
+from plugins.ui.contract import PluginUiDefinition, PluginUiNavigation, PluginUiRpcInvalidRequest, UI_SLOTS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.plugin_composition.ui import UI
+from plugins.ui.contract import UI
 
 from .collector import GlobalErrorCollector
 from .contracts import (
@@ -37,7 +30,7 @@ logger = logging.getLogger("plugin.observe")
 
 api_version = 3
 name = "observe"
-version = "2.0.0"
+version = "2.0.1"
 inject = (
     UI,
     UI_SLOTS,

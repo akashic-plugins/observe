@@ -22,7 +22,6 @@ from agent.plugins.composable import ComposablePlugin
 from agent.plugins.manager import PluginManager
 from agent.plugins.selection import PluginSelection
 from agent.plugins.static_manifest import load_static_plugin_manifest
-from bus.event_bus import EventBus
 from session.log import MessageLog, SessionAttributes
 from plugins.turn_projection.plugin import TurnProjection
 from session.message import (
@@ -238,7 +237,6 @@ def _manager(root: Path, log: MessageLog, workspace: Path) -> PluginManager:
     )
     return PluginManager(
         plugin_dirs=[plugins],
-        event_bus=EventBus(),
         workspace=workspace,
         installed_cache_root=root / "cache",
         message_log=log,
@@ -316,7 +314,7 @@ def test_static_manifest_and_module_exports_match() -> None:
     manifest = load_static_plugin_manifest(plugin_dir)
     composable = ComposablePlugin.from_module(module, manifest)
     assert manifest.name == composable.name == "observe"
-    assert manifest.version == composable.version == "2.0.0"
+    assert manifest.version == composable.version == "2.0.1"
     assert manifest.api_version == composable.api_version == 3
     assert composable.workspace_roots == ("observe",)
 
