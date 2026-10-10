@@ -30,7 +30,7 @@ logger = logging.getLogger("plugin.observe")
 
 api_version = 3
 name = "observe"
-version = "2.0.1"
+version = "2.0.2"
 inject = (
     UI,
     UI_SLOTS,
