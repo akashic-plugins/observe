@@ -314,7 +314,7 @@ def test_static_manifest_and_module_exports_match() -> None:
     manifest = load_static_plugin_manifest(plugin_dir)
     composable = ComposablePlugin.from_module(module, manifest)
     assert manifest.name == composable.name == "observe"
-    assert manifest.version == composable.version == "2.0.1"
+    assert manifest.version == composable.version == "2.0.2"
     assert manifest.api_version == composable.api_version == 3
     assert composable.workspace_roots == ("observe",)
 
