@@ -56,13 +56,7 @@ async def apply(ctx: Context) -> None:
     """启动 owner 历史投影、错误采集、Dashboard 与插件界面查询。"""
 
     await ctx.require(UI).register(
-        ctx, web="web_module.js",
-        dashboard=lambda: import_module(".dashboard", __package__),
-        requires=("workbench.panels.v2",),
-        provides=(),
-        contract_digests={
-            "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
-        },
+        ctx, dashboard=lambda: import_module(".dashboard", __package__),
     )
 
     # 1. 所有运行时文件都落在 Core 分配的声明式 Observe workspace root。
