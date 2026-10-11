@@ -8,18 +8,15 @@ from typing import Literal, cast
 
 from agent.plugin_composition import Context, RUNTIME_STARTED, RUNTIME_STOPPING
 from plugins.ui.contract import PluginUiDefinition, PluginUiNavigation, PluginUiRpcInvalidRequest, UI_SLOTS
-from agent.plugin_composition.messages import MESSAGE_CATALOG
+from plugins.ledger.contract import MESSAGE_CATALOG
 from plugins.ui.contract import UI
 
 from .collector import GlobalErrorCollector
-from .contracts import (
-    AKASHA_RECORDS_VIEW,
-    MEMORY_WRITES,
-    MODEL_CALL_HISTORY,
-    MODEL_CALLS,
-    TOOL_DISPLAY_NAME,
-    TURN_PROJECTION,
-)
+from plugins.akasha.contract import AKASHA_RECORDS_VIEW
+from plugins.markdown_memory.contract import MEMORY_WRITES
+from plugins.models.contract import MODEL_CALL_HISTORY, MODEL_CALLS
+from plugins.tools.contract import TOOL_DISPLAY_NAME
+from plugins.turn_projection.contract import TURN_PROJECTION
 from .dashboard import ObserveDashboardReader
 from .plugin_ui_kvcache import KVCacheDashboardReader
 from .retention import run_retention_if_needed

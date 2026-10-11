@@ -12,26 +12,11 @@ from pathlib import Path
 from typing import Any, cast
 
 from core.common.file_io import run_file_io
-from agent.plugin_composition.messages import MessageCatalog
-from agent.plugin_contracts import (
-    CallRef,
-    ContentPart,
-    Input,
-    Message,
-    Output,
-    ToolCall,
-    ToolResult,
-    json_value,
-)
+from plugins.ledger.contract import MessageCatalog
+from plugins.ledger.contract import CallRef, ContentPart, Input, Message, Output, ToolCall, ToolResult, json_value
 
-from .contracts import (
-    RecallContextSource,
-    RecallProgramSource,
-    RecallRecordsRead,
-    RecallToolSource,
-    Turn,
-    TurnProjection,
-)
+from plugins.akasha.contract import ContextSource as RecallContextSource, ProgramSource as RecallProgramSource, RecallRecordsRead, ToolSource as RecallToolSource
+from plugins.turn_projection.contract import Turn, TurnProjection
 from .events import MemoryWriteTrace, ModelCallTrace, RagHitLog, RagQueryLog, TurnTrace
 from .writer import TraceWriter
 
