@@ -22,18 +22,10 @@ from agent.plugins.composable import ComposablePlugin
 from agent.plugins.manager import PluginManager
 from agent.plugins.selection import PluginSelection
 from agent.plugins.static_manifest import load_static_plugin_manifest
-from session.log import MessageLog, SessionAttributes
+from plugins.ledger.log import MessageLog, SessionAttributes
+from plugins.ledger.contract import MESSAGE_CATALOG
 from plugins.turn_projection.plugin import TurnProjection
-from session.message import (
-    CallRef,
-    ContentPart,
-    ContentReferences,
-    Input,
-    Message,
-    Output,
-    ToolCall,
-    ToolResult,
-)
+from plugins.ledger.contract import CallRef, ContentPart, ContentReferences, Input, Message, Output, ToolCall, ToolResult
 
 
 def _load_plugin_module():
@@ -81,11 +73,11 @@ def _write_owner_plugin(root: Path) -> None:
         """
 from datetime import datetime, timezone
 from agent.plugin_composition import RUNTIME_STARTED
-from agent.plugin_composition.messages import OWNER_STATE
+from plugins.ledger.contract import OWNER_STATE
 from plugins.akasha.plugin import AKASHA_RECORDS_VIEW
 from plugins.akasha.recalls import Hit, ProgramSource, Recall, RecallRecords, RecallRecordsRead
-from plugins.markdown_memory.store import MEMORY_WRITES
-from plugins.models.projection import MODEL_CALL_HISTORY, MODEL_CALLS
+from plugins.markdown_memory.contract import MEMORY_WRITES
+from plugins.models.contract import MODEL_CALL_HISTORY, MODEL_CALLS
 from plugins.tools.plugin import TOOL_DISPLAY_NAME
 from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
 api_version = 3
@@ -235,22 +227,19 @@ def _manager(root: Path, log: MessageLog, workspace: Path) -> PluginManager:
         plugins / "ui",
         ignore=shutil.ignore_patterns("__pycache__"),
     )
-    return PluginManager(
-        plugin_dirs=[plugins],
-        workspace=workspace,
-        installed_cache_root=root / "cache",
-        message_log=log,
-    )
+    shutil.copytree(Path(os.environ["AKASHIC_AGENT_ROOT"]) / "plugins" / "ledger", plugins / "ledger")
+    return PluginManager(plugin_dirs=[plugins], workspace=workspace, installed_cache_root=root / 'cache')
 
 
 @pytest.mark.asyncio
 async def test_real_manager_projects_histories_and_restart_is_idempotent(
     tmp_path: Path,
 ) -> None:
-    log = MessageLog(tmp_path / "sessions.db")
+    (tmp_path / "workspace").mkdir(exist_ok=True)
+    log = MessageLog(tmp_path / "workspace" / "sessions.db")
     _append_real_messages(log, complete=False)
     workspace = tmp_path / "workspace"
-    workspace.mkdir()
+    workspace.mkdir(exist_ok=True)
     PluginSelection(workspace).initialize()
     manager = _manager(tmp_path / "first", log, workspace)
     db_path = workspace / "observe" / "observe.db"
@@ -262,7 +251,7 @@ async def test_real_manager_projects_histories_and_restart_is_idempotent(
         await _wait_rows(db_path, "rag_queries", 1)
         with sqlite3.connect(db_path) as connection:
             assert connection.execute("SELECT COUNT(*) FROM turns").fetchone()[0] == 0
-        _append_final(log)
+        _append_final(manager.live_root.context.require(MESSAGE_CATALOG)._log)
         await _wait_rows(db_path, "turns", 1)
         with sqlite3.connect(db_path) as connection:
             row = connection.execute(
@@ -558,7 +547,8 @@ async def test_message_prefix_yields_before_decoding_next_page(
 ) -> None:
     """真实历史读取让出执行权，同时固定上界且不提前提交 cursor。"""
     projection = sys.modules[f"{module.__name__}.projection"]
-    log = MessageLog(tmp_path / "sessions.db")
+    (tmp_path / "workspace").mkdir(exist_ok=True)
+    log = MessageLog(tmp_path / "workspace" / "sessions.db")
     log.ensure_session("s", attributes=SessionAttributes())
     inputs = log.writer(
         "s", author="user", source="conversation", body_types=(Input,),
@@ -635,7 +625,8 @@ async def test_projection_tracks_each_session_only_after_success(
 ) -> None:
     """无关会话不重扫，读失败的会话在原 head 上重试。"""
     projection = sys.modules[f"{module.__name__}.projection"]
-    log = MessageLog(tmp_path / "sessions.db")
+    (tmp_path / "workspace").mkdir(exist_ok=True)
+    log = MessageLog(tmp_path / "workspace" / "sessions.db")
     for session_id in ("s", "peer"):
         log.ensure_session(session_id, SessionAttributes())
         log.writer(
@@ -1048,7 +1039,7 @@ def test_error_fingerprint_normalizes_runtime_numbers() -> None:
 @pytest.mark.asyncio
 async def test_turn_cursor_limits_decoding_and_replays_abandon(tmp_path, monkeypatch):
     """消费进度限制读集；跨控制位置的开放输入和迟到结果仍归属原 Turn。"""
-    from session.message import Control
+    from plugins.ledger.contract import Control
     projection = sys.modules[f"{module.__name__}.projection"]
     log = MessageLog(tmp_path / 'sessions.db')
     log.save_binding('tool', {'name': 'tool'})
