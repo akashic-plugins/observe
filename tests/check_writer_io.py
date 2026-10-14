@@ -154,9 +154,9 @@ class HeldWriter(plugin.TraceWriter):
                 raise TimeoutError('fixture write gate was not released')
         return super()._write_one(connection, event)
 
-    def _read_pending_recalls(self, connection, keys):
+    def _read(self, connection, read):
         self.threads.add(threading.get_ident())
-        return super()._read_pending_recalls(connection, keys)
+        return super()._read(connection, read)
 
 
 def trace(index, scope):

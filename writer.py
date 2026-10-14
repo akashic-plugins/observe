@@ -16,11 +16,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
+from typing import cast
 
 from .db import open_db
 from .events import (
     GlobalErrorTrace,
     MemoryWriteTrace,
+    ModelCallBatch,
+    ModelCallRow,
     ModelCallTrace,
     RagQueryLog,
     TurnTrace,
@@ -33,15 +36,17 @@ _ARG_MAX = 300
 _RESULT_MAX = 500
 
 type TraceEvent = (
-    TurnTrace | RagQueryLog | MemoryWriteTrace | ModelCallTrace | GlobalErrorTrace
+    TurnTrace | RagQueryLog | MemoryWriteTrace | ModelCallTrace | ModelCallBatch
+    | GlobalErrorTrace
 )
+
 @dataclass(frozen=True)
-class _PendingRecalls:
-    keys: tuple[str, ...]
-    done: asyncio.Future[set[str]]
+class _Read:
+    read: Callable[[sqlite3.Connection], object]
+    done: asyncio.Future[object]
 
 
-type QueueItem = tuple[TraceEvent, asyncio.Future[None] | None] | _PendingRecalls
+type QueueItem = tuple[TraceEvent, asyncio.Future[None] | None] | _Read
 
 
 def _now_iso() -> str:
@@ -113,15 +118,23 @@ class TraceWriter:
         """等待本 writer 的 schema 初始化回执，失败不发布假就绪。"""
         await asyncio.shield(self._open_result())
 
+    async def read[T](self, read: Callable[[sqlite3.Connection], T]) -> T:
+        """在 writer 线程与写入串行执行一次只读查询。"""
+        done: asyncio.Future[object] = asyncio.get_running_loop().create_future()
+        await self._queue.put(_Read(read, done))
+        return cast(T, await done)
+
     async def pending_recalls(self, keys: Iterable[str]) -> set[str]:
         """从同一连接读取已提交回执，返回尚未完成的召回身份。"""
+        return await self.pending_receipts("akasha", keys)
+
+    async def pending_receipts(self, domain: str, keys: Iterable[str]) -> set[str]:
+        """返回该领域尚无事务回执的身份。"""
         unique = tuple(dict.fromkeys(keys))
         pending: set[str] = set()
         # 小批次既限制 SQLite 参数数量，也让排队中的写入有机会完成。
         for start in range(0, len(unique), 256):
-            done: asyncio.Future[set[str]] = asyncio.get_running_loop().create_future()
-            await self._queue.put(_PendingRecalls(unique[start:start + 256], done))
-            pending.update(await done)
+            pending.update(await self.read(partial(_pending_receipts, domain, unique[start:start + 256])))
         return pending
 
     async def _io[T](self, operation: Callable[[], T]) -> tuple[T, asyncio.CancelledError | None]:
@@ -204,12 +217,12 @@ class TraceWriter:
                     continue
                 except asyncio.QueueShutDown:
                     break
-                done = item.done if isinstance(item, _PendingRecalls) else item[1]
+                done = item.done if isinstance(item, _Read) else item[1]
                 try:
-                    if isinstance(item, _PendingRecalls):
-                        pending, stopped = await self._io(partial(self._read_pending_recalls, conn, item.keys))
+                    if isinstance(item, _Read):
+                        result, stopped = await self._io(partial(self._read, conn, item.read))
                         if not item.done.done():
-                            item.done.set_result(pending)
+                            item.done.set_result(result)
                     else:
                         _, stopped = await self._io(partial(self._write_one, conn, item[0]))
                         if item[1] is not None and not item[1].done():
@@ -217,13 +230,13 @@ class TraceWriter:
                     if stopped is not None:
                         cancelled = stopped
                 except BaseException as error:
-                    kind = type(item).__name__ if isinstance(item, _PendingRecalls) else type(item[0]).__name__
+                    kind = type(item).__name__ if isinstance(item, _Read) else type(item[0]).__name__
                     logger.exception("observe I/O failed for %s", kind)
                     if done is not None and not done.done():
                         done.set_exception(error)
                     if not isinstance(error, Exception):
                         raise
-                    if isinstance(item, _PendingRecalls) and not isinstance(error, sqlite3.Error):
+                    if isinstance(item, _Read) and not isinstance(error, sqlite3.Error):
                         raise
                 finally:
                     self._queue.task_done()
@@ -236,7 +249,7 @@ class TraceWriter:
                     item = self._queue.get_nowait()
                 except (asyncio.QueueEmpty, asyncio.QueueShutDown):
                     break
-                done = item.done if isinstance(item, _PendingRecalls) else item[1]
+                done = item.done if isinstance(item, _Read) else item[1]
                 if done is not None and not done.done():
                     done.set_exception(error)
                 self._queue.task_done()
@@ -254,14 +267,9 @@ class TraceWriter:
 
     # ── 内部写入 ─────────────────────────────────
 
-    def _read_pending_recalls(self, conn: sqlite3.Connection, keys: tuple[str, ...]) -> set[str]:
-        """在同一 writer 连接读取已提交身份，不访问 loop 的等待者。"""
-        placeholders = ",".join("?" for _ in keys)
-        rows = conn.execute(
-            "SELECT identity FROM projection_receipts WHERE domain='akasha' "
-            f"AND identity IN ({placeholders})", keys,
-        ).fetchall()
-        return set(keys).difference(row[0] for row in rows)
+    # 在同一 writer 连接执行只读查询，不访问 loop 的等待者。
+    def _read(self, conn: sqlite3.Connection, read: Callable[[sqlite3.Connection], object]) -> object:
+        return read(conn)
 
     def _write_one(
         self,
@@ -271,6 +279,7 @@ class TraceWriter:
             | RagQueryLog
             | MemoryWriteTrace
             | ModelCallTrace
+            | ModelCallBatch
             | GlobalErrorTrace
         ),
     ) -> None:
@@ -282,7 +291,9 @@ class TraceWriter:
         elif isinstance(event, MemoryWriteTrace):
             _write_memory_write(conn, event, ts)
         elif isinstance(event, ModelCallTrace):
-            _write_model_call(conn, event)
+            _write_model_calls(conn, (model_call_row(event),))
+        elif isinstance(event, ModelCallBatch):
+            _write_model_calls(conn, event.rows)
         elif isinstance(event, GlobalErrorTrace):
             _write_global_error(conn, event)
 
@@ -618,19 +629,44 @@ def _record_receipt(conn, domain: str, identity: str | None, recorded_at: str) -
     )
 
 
-def _write_model_call(conn, event: ModelCallTrace) -> None:
-    """调用记录按 owner ID 更新 started 状态，终态重扫保持幂等。"""
+def _pending_receipts(domain: str, keys: tuple[str, ...], conn: sqlite3.Connection) -> set[str]:
+    placeholders = ",".join("?" for _ in keys)
+    rows = conn.execute(
+        f"SELECT identity FROM projection_receipts WHERE domain=? AND identity IN ({placeholders})",
+        (domain, *keys),
+    ).fetchall()
+    return set(keys).difference(row[0] for row in rows)
+
+
+def model_call_row(event: ModelCallTrace) -> ModelCallRow:
     usage = (
         json.dumps(event.usage, ensure_ascii=False, sort_keys=True)
         if event.usage is not None
         else None
     )
+    return (
+        event.call_id, event.state, event.model, event.finished_at, event.first_token_ms,
+        event.duration_ms, usage, event.failure, event.started_at,
+    )
+
+
+def model_call_rows(conn: sqlite3.Connection) -> dict[str, ModelCallRow]:
+    """已提交的调用投影；重启后由它恢复比较基线，不另建游标。"""
+    rows = conn.execute(
+        "SELECT call_id, state, model, finished_at, first_token_ms, duration_ms, "
+        "usage_json, failure, started_at FROM model_calls"
+    ).fetchall()
+    return {row[0]: cast(ModelCallRow, tuple(row)) for row in rows}
+
+
+def _write_model_calls(conn: sqlite3.Connection, rows: tuple[ModelCallRow, ...]) -> None:
+    """调用记录按 owner ID 更新 started 状态；一批变化在同一事务提交。"""
     with conn:
-        conn.execute(
+        conn.executemany(
             """
             INSERT INTO model_calls (
-                call_id, state, model, started_at, finished_at,
-                first_token_ms, duration_ms, usage_json, failure
+                call_id, state, model, finished_at,
+                first_token_ms, duration_ms, usage_json, failure, started_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(call_id) DO UPDATE SET
                 state=excluded.state,
@@ -641,15 +677,5 @@ def _write_model_call(conn, event: ModelCallTrace) -> None:
                 usage_json=excluded.usage_json,
                 failure=excluded.failure
             """,
-            (
-                event.call_id,
-                event.state,
-                event.model,
-                event.started_at,
-                event.finished_at,
-                event.first_token_ms,
-                event.duration_ms,
-                usage,
-                event.failure,
-            ),
+            rows,
         )

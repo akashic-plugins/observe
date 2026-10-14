@@ -6,8 +6,10 @@ import asyncio
 import json
 import logging
 import sqlite3
+import time
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager, closing
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -32,10 +34,21 @@ from .contracts import (
     Turn,
     TurnProjection,
 )
-from .events import MemoryWriteTrace, ModelCallTrace, RagHitLog, RagQueryLog, TurnTrace
-from .writer import TraceWriter
+from .events import (
+    MemoryWriteTrace,
+    ModelCallBatch,
+    ModelCallRow,
+    ModelCallTrace,
+    RagHitLog,
+    RagQueryLog,
+    TurnTrace,
+)
+from .writer import TraceWriter, model_call_row, model_call_rows
 
 logger = logging.getLogger("observe.projection")
+
+# owner 历史没有变化通知；会话 head 变化时立即对账，否则最多隔这么久全量对账一次。
+_RECONCILE_SECONDS = 30.0
 
 
 def _texts(message: Message) -> str:
@@ -243,38 +256,59 @@ async def project_messages(
                 del trace
 
 
+def _model_call_trace(record: Mapping[str, Any]) -> ModelCallTrace:
+    binding = record.get("binding")
+    model = binding.get("model") if isinstance(binding, Mapping) else None
+    if not isinstance(model, str) or not model:
+        raise ValueError("模型调用缺少 model")
+    return ModelCallTrace(
+        call_id=cast(str, record["id"]),
+        state=cast(str, record["state"]),
+        model=model,
+        started_at=cast(str, record["started_at"]),
+        finished_at=cast(str | None, record["finished_at"]),
+        first_token_ms=cast(float | None, record["first_token_ms"]),
+        duration_ms=cast(float | None, record["duration_ms"]),
+        usage=(
+            dict(cast(Mapping[str, object], record["usage"]))
+            if isinstance(record.get("usage"), Mapping)
+            else None
+        ),
+        failure=cast(str | None, record["failure"]),
+    )
+
+
+# 在文件 worker 中读一页并只保留与已提交投影不同的调用。
+def _changed_calls(
+    read_page: Callable[[str, int], tuple[Mapping[str, Any], ...]],
+    after: str,
+    known: Mapping[str, ModelCallRow],
+) -> tuple[tuple[ModelCallRow, ...], int, str]:
+    page = read_page(after, 250)
+    changed: list[ModelCallRow] = []
+    for record in page:
+        row = model_call_row(_model_call_trace(record))
+        previous = known.get(row[0])
+        if previous is None or previous[:-1] != row[:-1]:
+            changed.append(row)
+    return tuple(changed), len(page), cast(str, page[-1]["id"]) if page else after
+
+
 async def project_model_calls(
     read_page: Callable[[str, int], tuple[Mapping[str, Any], ...]],
     writer: TraceWriter,
+    known: dict[str, ModelCallRow],
 ) -> None:
+    """新调用和 started 结算按页批量提交；未变化的终态调用不再写入。"""
     after = ""
     while True:
-        page = read_page(after, 250)
-        for record in page:
-            binding = record.get("binding")
-            model = binding.get("model") if isinstance(binding, Mapping) else None
-            if not isinstance(model, str) or not model:
-                raise ValueError("模型调用缺少 model")
-            await writer.submit(
-                ModelCallTrace(
-                    call_id=cast(str, record["id"]),
-                    state=cast(str, record["state"]),
-                    model=model,
-                    started_at=cast(str, record["started_at"]),
-                    finished_at=cast(str | None, record["finished_at"]),
-                    first_token_ms=cast(float | None, record["first_token_ms"]),
-                    duration_ms=cast(float | None, record["duration_ms"]),
-                    usage=(
-                        dict(cast(Mapping[str, object], record["usage"]))
-                        if isinstance(record.get("usage"), Mapping)
-                        else None
-                    ),
-                    failure=cast(str | None, record["failure"]),
-                )
-            )
-        if len(page) < 250:
+        changed, size, after = await run_file_io(partial(_changed_calls, read_page, after, known))
+        if changed:
+            await writer.submit(ModelCallBatch(changed))
+            # 事务确认后才推进比较基线；失败时下一轮仍会重写这些调用。
+            known.update((row[0], row) for row in changed)
+        if size < 250:
             break
-        after = cast(str, page[-1]["id"])
 
 
 async def project_memory_writes(
@@ -284,12 +318,14 @@ async def project_memory_writes(
     after: tuple[str, str] | None = None
     rows: list[dict[str, object]] = []
     while True:
-        page = read_page(after, 1000)
+        page = await run_file_io(partial(read_page, after, 1000))
         rows.extend(page)
         if len(page) < 1000:
             break
         after = (cast(str, page[-1]["source_ref"]), cast(str, page[-1]["kind"]))
-        await asyncio.sleep(0)
+    pending = await writer.pending_receipts(
+        "markdown", (f"markdown:{row['source_ref']}:{row['kind']}" for row in rows)
+    )
     sessions: dict[str, str] = {}
     for index, row in enumerate(rows, 1):
         payload = row.get("payload")
@@ -301,6 +337,8 @@ async def project_memory_writes(
             await asyncio.sleep(0)
     for row in rows:
         source_ref, kind = cast(str, row["source_ref"]), cast(str, row["kind"])
+        if f"markdown:{source_ref}:{kind}" not in pending:
+            continue
         payload = row.get("payload")
         await writer.submit(
             MemoryWriteTrace(
@@ -321,7 +359,7 @@ async def project_akasha(
     writer: TraceWriter,
 ) -> None:
     """只为未完成的不可变召回读取正文，再由 writer 原子提交投影回执。"""
-    recalls = records.list()
+    recalls = await run_file_io(records.list)
     pending = await writer.pending_recalls(f"akasha:{identity}" for identity, _ in recalls)
     scanned_without_submit = 0
     for identity, recall in recalls:
@@ -383,6 +421,23 @@ async def project_akasha(
         scanned_without_submit = 0
 
 
+async def _reconcile_owners(
+    model_history: Callable[[str, int], tuple[Mapping[str, Any], ...]],
+    memory_history: Callable[[tuple[str, str] | None, int], tuple[dict[str, object], ...]],
+    records: RecallRecordsRead,
+    catalog: MessageCatalog,
+    writer: TraceWriter,
+    known_calls: dict[str, ModelCallRow],
+) -> None:
+    # 1. 首轮从 Observe 已提交的 model_calls 恢复比较基线，重启不需要额外游标。
+    if not known_calls:
+        known_calls.update(await writer.read(model_call_rows))
+    # 2. owner 读取与转换在文件 worker 中执行；只提交变化或缺少回执的记录。
+    await project_model_calls(model_history, writer, known_calls)
+    await project_memory_writes(memory_history, writer)
+    await project_akasha(records, catalog, writer)
+
+
 async def run_projection(
     *,
     runtime_scope: Callable[[], AbstractAsyncContextManager[None]],
@@ -398,8 +453,10 @@ async def run_projection(
     writer: TraceWriter,
     db_path: Path,
 ) -> None:
-    """周期重扫 owner 历史；诊断失败保持可见并在下一轮重试。"""
+    """会话变化或对账间隔到期时重扫 owner 历史；失败保持可见并在下一轮重试。"""
     previous_heads: Mapping[str, int] | None = None
+    known_calls: dict[str, ModelCallRow] = {}
+    reconciled_at: float | None = None
     while True:
         try:
             # 每轮单独取得正式 scope；后台 task 不能借用启动回调的授权。
@@ -411,18 +468,19 @@ async def run_projection(
                 }
                 if changed_heads:
                     await project_messages(
-                        catalog,
-                        turns,
-                        read_call,
-                        tool_name,
-                        writer,
-                        db_path,
+                        catalog, turns, read_call, tool_name, writer, db_path,
                         heads=changed_heads,
                     )
                     previous_heads = dict(heads)
-                await project_model_calls(model_history, writer)
-                await project_memory_writes(memory_history, writer)
-                await project_akasha(akasha_records(), catalog, writer)
+                if (
+                    changed_heads or reconciled_at is None
+                    or time.monotonic() - reconciled_at >= _RECONCILE_SECONDS
+                ):
+                    await _reconcile_owners(
+                        model_history, memory_history, akasha_records(), catalog,
+                        writer, known_calls,
+                    )
+                    reconciled_at = time.monotonic()
         except asyncio.CancelledError:
             raise
         except Exception:

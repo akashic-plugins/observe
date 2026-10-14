@@ -121,3 +121,16 @@ class ModelCallTrace:
     duration_ms: float | None
     usage: dict[str, object] | None
     failure: str | None
+
+
+# model_calls 列顺序；started_at 放最后，比较变化时不含 owner 不改写的起始时间。
+type ModelCallRow = tuple[
+    str, str, str, str | None, float | None, float | None, str | None, str | None, str
+]
+
+
+@dataclass(frozen=True)
+class ModelCallBatch:
+    """同一事务提交的一页变化调用；无变化的终态调用不进入批次。"""
+
+    rows: tuple[ModelCallRow, ...]
