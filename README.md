@@ -27,6 +27,12 @@ Future 与队列只在原 loop 操作，线程不访问 Context 或其它 owner 
 
 Akasha 投影在读取 Message 正文前，先由 TraceWriter 的同一连接查询既有 receipt，只处理尚未提交的不可变 recall。读取或写入失败不留下完成回执，下一轮仍会重试；不另建进度账本。`rag_queries` 继续保留 90 天，独立 receipt 不随 trace 清理，因此重启或全量枚举不会复活过期记录。`memory_writes` 与既有合同一致，不参与自动 retention。
 
+模型调用、Markdown 写入与 Akasha 召回没有变化通知，Observe 在会话 head 变化时立即对账，
+否则最多每 30 s 全量对账一次，空闲时不再每 2 s 重扫。owner 分页读取与转换在受限文件 worker
+中执行，不占用事件循环。模型调用与 Observe 已提交的 `model_calls` 逐列比较，只把新调用和
+started 结算按页放进同一事务；比较基线在重启后从 `model_calls` 恢复，不新增游标。Markdown
+写入同 Akasha 一样先查 receipt，只提交缺少回执的记录。
+
 Message source `wake` 继续显示为 `proactive`，`drift` 显示为 `drift`，其余来源显示为 `agent`。原始模型输出和旧 context 临时统计不从 Message 反推；对应列保留，已有历史不改写。
 
 Dashboard 使用 `register(app, DashboardContext)`，只读取当前 generation 的声明式 workspace root。candidate 验证只写 Core 分配的临时 workspace，formal publish 后才继续写正式 `observe` workspace。
